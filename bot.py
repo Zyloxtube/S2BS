@@ -63,10 +63,7 @@ def keep_alive():
     t = Thread(target=run_web)
     t.start()
 
-# ─── إعدادات البوت ─────────────────────────────────────────────────────────
-TOKEN = os.environ.get("DISCORD_BOT_TOKEN")
-
-# ─── Temp email ───────────────────────────────────────────────────────────────
+# ─── Temp email ─────────────────────────────────────────────────────────────
 
 class TempEmail:
     def __init__(self):
@@ -121,9 +118,8 @@ class TempEmail:
             d = r.json()
             body = re.sub(r"<[^>]+>", "", d.get("mail_body", "") or "")
             return (
-                self._extract_code(d.get("mail_subject", "")) or
-                self._extract_code(d.get("mail_from", "")) or
-                self._extract_code(body)
+                self._extract_code(d.get("mail_subject", ""))
+                or self._extract_code(body)
             )
         except Exception:
             return None
@@ -273,7 +269,7 @@ def create_workspace(id_token):
 
     try:
         requests.post(
-            "https://api.synthesia.io/user/onboarding/questionnaire",
+            "https://api.synthesia.io/user/questionnaire",
             headers=headers,
             json={
                 "company": {"size": "emerging", "industry": "professional_services"},
@@ -362,9 +358,9 @@ def start_synthesia_generation(token, workspace_id, prompt, size, model):
     except requests.exceptions.RequestException as e:
         raise RuntimeError(f"Failed to start generation: {str(e)}")
 
-def poll_synthesia(token, asset_id, interval=8):
-    # NO TIMEOUT - will poll forever until ready or failed
-    while True:
+def poll_synthesia(token, asset_id, timeout=600, interval=8):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
         try:
             r = requests.get(
                 f"https://api.synthesia.io/assets/{asset_id}",
@@ -382,6 +378,7 @@ def poll_synthesia(token, asset_id, interval=8):
         except requests.exceptions.RequestException as e:
             print(f"Polling error: {e}, retrying...")
             time.sleep(interval)
+    raise TimeoutError("Generation timed out after 10 minutes.")
 
 def run_synthesia_generation(prompt: str, size: str, model: str) -> dict:
     temp = TempEmail()
@@ -397,7 +394,7 @@ def run_synthesia_generation(prompt: str, size: str, model: str) -> dict:
     token = sign_in_with_cognito(email)
     workspace_id = create_workspace(token)
     asset_id = start_synthesia_generation(token, workspace_id, prompt, size, model)
-    result = poll_synthesia(token, asset_id)  # NO TIMEOUT HERE
+    result = poll_synthesia(token, asset_id)
 
     return {
         "url": result.get("url", ""),
@@ -469,7 +466,6 @@ def _oreate_create_session() -> tuple:
             "ticketID": ticket_id,
             "password": encrypted_password,
             "jt": "",
-            "source": "aiImage",
         },
         timeout=30,
     )
@@ -568,7 +564,7 @@ def _oreate_upload_image(sess: requests.Session, image_bytes: bytes, filename: s
 def _oreate_extract_image_url(text: str):
     if not text:
         return None
-    m = re.search(r"\((https?://[^\s)]+)\)", text)
+    m = re.search(r"\((https?://[^\s]+)\)", text)
     if m:
         return m.group(1)
     m = re.search(r"(https?://[^\s\"'<>]+\.(jpg|jpeg|png|gif|webp|bmp|svg)(\?[^\s\"'<>]*)?)", text, re.IGNORECASE)
@@ -908,7 +904,7 @@ NB2_PROGRESS_STAGES = [
     {"threshold": 3,  "label": "Creating account", "emoji": "📧"},
     {"threshold": 10, "label": "Generating image", "emoji": "🎨"},
     {"threshold": 60, "label": "Finalizing",       "emoji": "✨"},
- ]
+]
 
 SEEDANCE2_PROGRESS_STAGES = [
     {"threshold": 0,   "label": "Initializing",       "emoji": "⚙️"},
