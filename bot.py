@@ -18,26 +18,6 @@ from html.parser import HTMLParser
 from Crypto.PublicKey import RSA
 from Crypto.Cipher import PKCS1_v1_5
 
-# ─── إعداد خادم الويب (لـ Render) ─────────────────────────────────────────────
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "🤖 Bot is alive and running 24/7!"
-
-@app.route('/ping')
-def ping():
-    return "pong"
-
-def run_web():
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
-
-def keep_alive():
-    t = Thread(target=run_web)
-    t.start()
-
-# ─── إعدادات البوت ─────────────────────────────────────────────────────────
-TOKEN = os.environ.get("DISCORD_BOT_TOKEN")
 PASSWORD = "Test1234Abc!"
 COGNITO_CLIENT_ID = "1kvg8re5bgu9ljqnnkjosu477k"
 USER_POOL_ID = "eu-west-1_7hEawdalF"
@@ -64,6 +44,27 @@ intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
+
+# ─── إعداد خادم الويب (لـ Render) ─────────────────────────────────────────────
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "🤖 Bot is alive and running 24/7!"
+
+@app.route('/ping')
+def ping():
+    return "pong"
+
+def run_web():
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
+
+def keep_alive():
+    t = Thread(target=run_web)
+    t.start()
+
+# ─── إعدادات البوت ─────────────────────────────────────────────────────────
+TOKEN = os.environ.get("DISCORD_BOT_TOKEN")
 
 # ─── Temp email ───────────────────────────────────────────────────────────────
 
@@ -102,6 +103,8 @@ class TempEmail:
                 self.seen_ids.add(email["mail_id"])
                 code = self._extract_code(email.get("mail_subject", ""))
                 if not code:
+                    code = self._extract_code(email.get("mail_from", ""))
+                if not code:
                     code = self._fetch_body_code(email["mail_id"])
                 if code:
                     return code
@@ -118,9 +121,9 @@ class TempEmail:
             d = r.json()
             body = re.sub(r"<[^>]+>", "", d.get("mail_body", "") or "")
             return (
-                self._extract_code(d.get("mail_subject", ""))
-                or self._extract_code(d.get("mail_from", ""))
-                or self._extract_code(body)
+                self._extract_code(d.get("mail_subject", "")) or
+                self._extract_code(d.get("mail_from", "")) or
+                self._extract_code(body)
             )
         except Exception:
             return None
@@ -270,7 +273,7 @@ def create_workspace(id_token):
 
     try:
         requests.post(
-            "https://api.synthesia.io/user/questionnaire",
+            "https://api.synthesia.io/user/onboarding/questionnaire",
             headers=headers,
             json={
                 "company": {"size": "emerging", "industry": "professional_services"},
@@ -359,9 +362,9 @@ def start_synthesia_generation(token, workspace_id, prompt, size, model):
     except requests.exceptions.RequestException as e:
         raise RuntimeError(f"Failed to start generation: {str(e)}")
 
-def poll_synthesia(token, asset_id, timeout=600, interval=8):
-    deadline = time.time() + timeout
-    while time.time() < deadline:
+def poll_synthesia(token, asset_id, interval=8):
+    # REMOVED TIMEOUT - will poll indefinitely until ready or failed
+    while True:
         try:
             r = requests.get(
                 f"https://api.synthesia.io/assets/{asset_id}",
@@ -379,7 +382,6 @@ def poll_synthesia(token, asset_id, timeout=600, interval=8):
         except requests.exceptions.RequestException as e:
             print(f"Polling error: {e}, retrying...")
             time.sleep(interval)
-    raise TimeoutError("Generation timed out after 10 minutes.")
 
 def run_synthesia_generation(prompt: str, size: str, model: str) -> dict:
     temp = TempEmail()
@@ -467,6 +469,7 @@ def _oreate_create_session() -> tuple:
             "ticketID": ticket_id,
             "password": encrypted_password,
             "jt": "",
+            "source": "aiImage",
         },
         timeout=30,
     )
@@ -495,7 +498,6 @@ def _oreate_upload_image(sess: requests.Session, image_bytes: bytes, filename: s
         },
         json={
             "mFileList": [{"filename": clean_name, "fileExt": ext, "size": len(image_bytes)}],
-            "source": "aiImage",
         },
         timeout=30,
     )
@@ -566,7 +568,7 @@ def _oreate_upload_image(sess: requests.Session, image_bytes: bytes, filename: s
 def _oreate_extract_image_url(text: str):
     if not text:
         return None
-    m = re.search(r"\((https?://[^)\s]+)\)", text)
+    m = re.search(r"\((https?://[^\s)]+)\)", text)
     if m:
         return m.group(1)
     m = re.search(r"(https?://[^\s\"'<>]+\.(jpg|jpeg|png|gif|webp|bmp|svg)(\?[^\s\"'<>]*)?)", text, re.IGNORECASE)
@@ -906,7 +908,7 @@ NB2_PROGRESS_STAGES = [
     {"threshold": 3,  "label": "Creating account", "emoji": "📧"},
     {"threshold": 10, "label": "Generating image", "emoji": "🎨"},
     {"threshold": 60, "label": "Finalizing",       "emoji": "✨"},
-]
+ ]
 
 SEEDANCE2_PROGRESS_STAGES = [
     {"threshold": 0,   "label": "Initializing",       "emoji": "⚙️"},
@@ -1185,12 +1187,12 @@ async def generate(
                 media_file = discord.File(io.BytesIO(media_bytes), filename=filename)
                 if is_image:
                     success_embed.set_image(url=f"attachment://{filename}")
-            else:
-                success_embed.add_field(
-                    name="📥 Download",
-                    value=f"[Click to download]({download_url})",
-                    inline=False,
-                )
+                else:
+                    success_embed.add_field(
+                        name="📥 Download",
+                        value=f"[Click to download]({download_url})",
+                        inline=False,
+                    )
         except Exception as dl_err:
             print(f"Download error: {dl_err}")
             if download_url:
