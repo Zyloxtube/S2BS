@@ -15,10 +15,37 @@ import base64 as _base64
 from html.parser import HTMLParser
 from Crypto.PublicKey import RSA
 from Crypto.Cipher import PKCS1_v1_5
+from flask import Flask
+from threading import Thread
 
-= "Test1234Abc!"
+PASSWORD = "Test1234Abc!"
 COGNITO_CLIENT_ID = "1kvg8re5bgu9ljqnnkjosu477k"
-USER_POOL_ID =# ─── إعداد خادم الويب (لـ Render) ─────────────────────────────────────────────
+USER_POOL_ID = "eu-west-1_7hEawdalF"
+GUERRILLA_API = "https://api.guerrillamail.com/ajax.php"
+OREATE_BASE = "https://www.oreateai.com"
+
+VALID_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff"}
+VIDEO_SIZES = ["1280x720", "720x1280"]
+
+BRAND_COLOR = 0x5865F2
+SUCCESS_COLOR = 0x57F287
+ERROR_COLOR = 0xED4245
+PROGRESS_COLOR = 0xFEE75C
+INFO_COLOR = 0x5865F2
+
+BROWSER_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Referer": "https://oreateai.com/",
+    "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
+intents = discord.Intents.default()
+intents.message_content = True
+client = discord.Client(intents=intents)
+tree = app_commands.CommandTree(client)
+
+# ─── إعداد خادم الويب (لـ Render) ─────────────────────────────────────────────
 app = Flask(__name__)
 
 @app.route('/')
@@ -36,38 +63,7 @@ def keep_alive():
     t = Thread(target=run_web)
     t.start()
 
-e = app_commands.CommandTree(client)
-
-# ─── Temp email ──────────────────────# ─── إعدادات البوت ─────────────────────────────────────────────────────────
-TOKEN = os.environ.get("DISCORD_BOT_TOKEN")
-PASSWORD
-  "eu-west-1_7hEawdalF"
-GUERRILLA_API = "https://api.guerrillamail.com/ajax.php"
-OREATE_BASE = "https://www.oreateai.com"
-
-VALID_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff"}
-VIDEO_SIZES = ["1280x720", "720x1280"]
-
-BRAND_COLOR = 0x5865F2
-SUCCESS_COLOR = 0x57F287
-ERROR_COLOR = 0xED4245
-PROGRESS_COLOR = 0xFEE75C
-INFO_COLOR = 0x5865F2
-
-BROWSER_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-    "Referer": "https://oreateai.com/",
-    "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
-et()
-        raw = data["email_addr"]
-      "Accept-Language": "en-US,en;q=0.9",
-}
-
-intents = discord.Intents.default()
-intents.message_content = True
-client = discord.Client(intents=intents)
-tr
-e─────────────────────────────────────────
+# ─── Temp email ──────────────────────────────────────────────────────────────
 
 class TempEmail:
     def __init__(self):
@@ -81,8 +77,9 @@ class TempEmail:
         data = r.json()
         self.sid_token = data["sid_token"]
         self.seq = 0
-        self.seen_ids = 
-s      at = raw.find("@")
+        self.seen_ids = set()
+        raw = data["email_addr"]
+        at = raw.find("@")
         self.email_addr = (raw[:at + 1] if at != -1 else raw + "@") + "sharklasers.com"
         return self.email_addr
 
@@ -101,9 +98,7 @@ s      at = raw.find("@")
                 if email["mail_id"] in self.seen_ids:
                     continue
                 self.seen_ids.add(email["mail_id"])
-       ", ""))
-                or self._extract_code(d.get("mail_from", ""))
-                  code = self._extract_code(email.get("mail_subject", ""))
+                code = self._extract_code(email.get("mail_subject", ""))
                 if not code:
                     code = self._fetch_body_code(email["mail_id"])
                 if code:
@@ -121,8 +116,8 @@ s      at = raw.find("@")
             d = r.json()
             body = re.sub(r"<[^>]+>", "", d.get("mail_body", "") or "")
             return (
-                self._extract_code(d.get("mail_subjec
-t              or self._extract_code(body)
+                self._extract_code(d.get("mail_subject", ""))
+                or self._extract_code(body)
             )
         except Exception:
             return None
@@ -136,8 +131,7 @@ t              or self._extract_code(body)
             return m.group(1)
         m = re.search(r"(\d{5})", text)
         if m:
- 
-    return m.group(1)
+            return m.group(1)
         m = re.search(r"(\d{4})", text)
         return m.group(1) if m else None
 
@@ -169,11 +163,9 @@ def sign_up_with_cognito(email):
         error_msg = str(e)
         if "User already exists" in error_msg or "UsernameExistsException" in error_msg:
             return {"status": "exists", "message": "User already exists"}
-ent_id=COGNITO_CLIENT_ID,
-                    username=ema        raise RuntimeError(f"Sign-up failed: {error_msg}")
+        raise RuntimeError(f"Sign-up failed: {error_msg}")
 
-def confirm_sign_up_with_cognito(email, cod
-e):
+def confirm_sign_up_with_cognito(email, code):
     try:
         cognito = Cognito(
             user_pool_id=USER_POOL_ID,
@@ -200,15 +192,13 @@ def sign_in_with_cognito(email):
             raise RuntimeError("Failed to get ID token after authentication")
         return id_token
     except Exception as e:
-_msg}")
-
-# ─── Synthesia w        error_msg = str(e)
+        error_msg = str(e)
         if "NEW_PASSWORD_REQUIRED" in error_msg:
             try:
                 cognito = Cognito(
                     user_pool_id=USER_POOL_ID,
-                    cl
-iil,
+                    client_id=COGNITO_CLIENT_ID,
+                    username=email,
                     user_pool_region="eu-west-1",
                 )
                 cognito.authenticate(password=PASSWORD)
@@ -218,8 +208,9 @@ iil,
                 return cognito.id_token
             except Exception as inner_e:
                 raise RuntimeError(f"Failed to handle password change: {str(inner_e)}")
-        raise RuntimeError(f"Authentication failed: {erro
-rorkspace ───────────────────────────────────────────────────────
+        raise RuntimeError(f"Authentication failed: {error_msg}")
+
+# ─── Synthesia workspace ───────────────────────────────────────────────────────
 
 def create_workspace(id_token):
     headers = {
@@ -238,15 +229,13 @@ def create_workspace(id_token):
             json={"strict": True, "includeDemoVideos": False},
         )
         res.raise_for_status()
-ices"},
-                "seniority": "individual_con        workspace_id = res.json()["workspace"]["id"]
+        workspace_id = res.json()["workspace"]["id"]
 
     try:
         requests.post(
             "https://api.synthesia.io/user/onboarding/setPreferredWorkspaceId",
             headers=headers,
-
-            "https://api.synthesia.io/user/que            json={"workspaceId": workspace_id},
+            json={"workspaceId": workspace_id},
         )
     except Exception:
         pass
@@ -277,12 +266,12 @@ ices"},
             break
 
     try:
-        requests.post
-(stionnaire",
+        requests.post(
+            "https://api.synthesia.io/user/questionnaire",
             headers=headers,
             json={
-                "company": {"size": "emerging", "industry": "professional_ser
-vtributor",
+                "company": {"size": "emerging", "industry": "professional_services"},
+                "seniority": "individual_contributor",
                 "persona": "marketing",
             },
         )
@@ -332,7 +321,7 @@ def start_synthesia_generation(token, workspace_id, prompt, size, model):
                 "modelName": "sora_2",
                 "generateAudio": True,
                 "aspectRatio": aspect_ratio,
-timeout=600,             }
+            }
             media_type = "video"
         elif model in ("fal_veo3", "fal_veo3_fast"):
             model_request = {
@@ -342,8 +331,7 @@ timeout=600,             }
             }
             media_type = "video"
         else:
-            model_request =
- {
+            model_request = {
                 "modelName": "nanobanana_pro",
                 "aspectRatio": aspect_ratio,
             }
@@ -368,8 +356,7 @@ timeout=600,             }
     except requests.exceptions.RequestException as e:
         raise RuntimeError(f"Failed to start generation: {str(e)}")
 
-def poll_synthesia(token, asset_id,
- interval=8):
+def poll_synthesia(token, asset_id, timeout=600, interval=8):
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
@@ -391,8 +378,7 @@ def poll_synthesia(token, asset_id,
             time.sleep(interval)
     raise TimeoutError("Generation timed out after 10 minutes.")
 
-def run_synthesia_generation(prompt: str, size: s
-tr, model: str) -> dict:
+def run_synthesia_generation(prompt: str, size: str, model: str) -> dict:
     temp = TempEmail()
     email = temp.generate()
 
@@ -406,8 +392,7 @@ tr, model: str) -> dict:
     token = sign_in_with_cognito(email)
     workspace_id = create_workspace(token)
     asset_id = start_synthesia_generation(token, workspace_id, prompt, size, model)
-TE_UA,
-        "Accept": "application/json,     result = poll_synthesia(token, asset_id)
+    result = poll_synthesia(token, asset_id)
 
     return {
         "url": result.get("url", ""),
@@ -444,12 +429,11 @@ def _oreate_encrypt_password(plain_text: str, public_key_pem: str) -> str:
 def _oreate_create_session() -> tuple:
     sess = requests.Session()
     sess.headers.update({
-        "User-Agent": _ORE
-Atext/plain, */*",
+        "User-Agent": _OREATE_UA,
+        "Accept": "application/json, text/plain, */*",
         "Accept-Language": "en-US,en;q=0.9",
         "Locale": "en-US",
-        "Client-
-Type": "pc",
+        "Client-Type": "pc",
     })
 
     ticket_res = sess.get(
@@ -480,21 +464,19 @@ Type": "pc",
             "ticketID": ticket_id,
             "password": encrypted_password,
             "jt": "",
+            "source": "aiImage",
         },
         timeout=30,
     )
     signup_res.raise_for_status()
-        "source": "aiImage",
-          signup_data = signup_res.json()
+    signup_data = signup_res.json()
 
     if signup_data.get("status", {}).get("code") != 0:
         raise RuntimeError(f"OreateAI signup failed: {signup_data.get('status', {}).get('msg')}")
 
     sess.headers.update({
         "Origin": OREATE_BASE,
-'jpeg' if ext == 'jpg' else ext}"
-
-    gcs_init_url =         "Referer": f"{OREATE_BASE}/home/chat/aiImage",
+        "Referer": f"{OREATE_BASE}/home/chat/aiImage",
     })
     return sess, email, password
 
@@ -511,8 +493,7 @@ def _oreate_upload_image(sess: requests.Session, image_bytes: bytes, filename: s
         },
         json={
             "mFileList": [{"filename": clean_name, "fileExt": ext, "size": len(image_bytes)}],
-   
-   },
+        },
         timeout=30,
     )
     token_res.raise_for_status()
@@ -529,8 +510,9 @@ def _oreate_upload_image(sess: requests.Session, image_bytes: bytes, filename: s
     bucket = key_data["bucket"]
     object_path = key_data["objectPath"]
     session_key = key_data["sessionkey"]
-    content_type = f"image/
-{(
+    content_type = f"image/{'jpeg' if ext == 'jpg' else ext}"
+
+    gcs_init_url = (
         f"https://storage.googleapis.com/upload/storage/v1/b/{bucket}/o"
         f"?uploadType=resumable&name={requests.utils.quote(object_path, safe='')}"
     )
@@ -541,9 +523,7 @@ def _oreate_upload_image(sess: requests.Session, image_bytes: bytes, filename: s
             "Authorization": f"Bearer {session_key}",
             "Content-Type": "application/json",
             "X-Upload-Content-Type": content_type,
- text:
-        return None
-    m = re.search(r"\((https?://[^            "X-Upload-Content-Length": str(len(image_bytes)),
+            "X-Upload-Content-Length": str(len(image_bytes)),
             "Origin": OREATE_BASE,
             "Referer": f"{OREATE_BASE}/",
         },
@@ -578,11 +558,12 @@ def _oreate_upload_image(sess: requests.Session, image_bytes: bytes, filename: s
         "flag": "upload",
         "type": "file",
         "status": 1,
-         }
+    }
 
 def _oreate_extract_image_url(text: str):
-    if no
-t)\s]+)\)", text)
+    if not text:
+        return None
+    m = re.search(r"\((https?://[^\s)]+)\)", text)
     if m:
         return m.group(1)
     m = re.search(r"(https?://[^\s\"'<>]+\.(jpg|jpeg|png|gif|webp|bmp|svg)(\?[^\s\"'<>]*)?)", text, re.IGNORECASE)
@@ -624,8 +605,7 @@ def run_oreate_generation(prompt: str, size: str, ref_images: list) -> dict:
         json={
             "clientType": "pc",
             "type": "chat",
-      
- "chatType": "aiImage",
+            "chatType": "aiImage",
             "chatId": chat_id,
             "focusId": chat_id,
             "from": "home",
@@ -657,8 +637,7 @@ def run_oreate_generation(prompt: str, size: str, ref_images: list) -> dict:
                 continue
 
             extracted = _oreate_extract_image_url(json_str)
-            if extracted and "." in extracted.split("/")[-
-1]:
+            if extracted and "." in extracted.split("/")[-1]:
                 image_url = extracted
                 break
 
@@ -673,8 +652,7 @@ def run_oreate_generation(prompt: str, size: str, ref_images: list) -> dict:
                 for key in ("imageUrl", "url", "image_url"):
                     val = data.get("data", {}).get(key)
                     if val and val.startswith("http"):
-zy_generate_temp_email():
-    response                         image_url = val
+                        image_url = val
                         break
                 if image_url:
                     break
@@ -734,15 +712,14 @@ def _extract_code_from_text(text):
     m = re.search(r'(\d{4})', text)
     return m.group(1) if m else None
 
-def _bu
-z= requests.get(f"{GUERRILLA_API}?f=get_email_address")
+def _buzzy_generate_temp_email():
+    response = requests.get(f"{GUERRILLA_API}?f=get_email_address")
     data = response.json()
     if 'email_addr' not in data:
         raise Exception(f"Failed to generate temp email")
     sid_token = data['sid_token']
     local_part = data['email_addr'].split('@')[0]
-    email = f"{local
-_part}@sharklasers.com"
+    email = f"{local_part}@sharklasers.com"
     return email, sid_token
 
 def _buzzy_generate_random_password():
@@ -780,13 +757,7 @@ def _buzzy_wait_for_code(sid_token, max_attempts=30, interval=4):
             seen_ids.add(mail_id)
 
             code = (
-project(token, prompt):
-    response = requests.post(
-ompt
-        },
-        headers={
-            'Content-Type': 'application/json',
-                'https://a                _extract_code_from_text(mail.get('mail_subject', '')) or
+                _extract_code_from_text(mail.get('mail_subject', '')) or
                 _extract_code_from_text(mail.get('mail_from', ''))
             )
 
@@ -820,8 +791,9 @@ def _buzzy_register_user(email, password, email_code):
         return data['data']['token']
     raise Exception(f"Registration failed")
 
-def _buzzy_create_video
-_pi.buzzy.now/api/app/v1/project/create',
+def _buzzy_create_video_project(token, prompt):
+    response = requests.post(
+        'https://api.buzzy.now/api/app/v1/project/create',
         json={
             'name': 'Untitled',
             'workflowType': 'SOTA',
@@ -829,8 +801,11 @@ _pi.buzzy.now/api/app/v1/project/create',
             'imageUrls': [],
             'duration': 10,
             'aspectRatio': '16:9',
-            'prompt': p
-r    'Authorization': f'Bearer {token}'
+            'prompt': prompt
+        },
+        headers={
+            'Content-Type': 'application/json',
+            'Authorization': f'Bearer {token}'
         }
     )
     data = response.json()
@@ -898,8 +873,7 @@ def run_seedance2_generation(prompt: str) -> dict:
 
 # ─── Dispatch ─────────────────────────────────────────────────────────────────
 
-def r
-un_generation(prompt: str, size: str, model: str, ref_images: list = None) -> dict:
+def run_generation(prompt: str, size: str, model: str, ref_images: list = None) -> dict:
     if model == "nanobanana_2":
         return run_oreate_generation(prompt, size, ref_images or [])
     if model == "seedance_2":
@@ -920,8 +894,7 @@ PROGRESS_STAGES = [
     {"threshold": 15,  "label": "Verifying email",      "emoji": "✉️"},
     {"threshold": 30,  "label": "Setting up workspace", "emoji": "🛠️"},
     {"threshold": 65,  "label": "Generating media",     "emoji": "🎨"},
-    {"threshold": 120, "label": "Rendering",            "emoji": "🎬"}
-,
+    {"threshold": 120, "label": "Rendering",            "emoji": "🎬"},
     {"threshold": 300, "label": "Finalizing",           "emoji": "✨"},
 ]
 
@@ -930,7 +903,7 @@ NB2_PROGRESS_STAGES = [
     {"threshold": 3,  "label": "Creating account", "emoji": "📧"},
     {"threshold": 10, "label": "Generating image", "emoji": "🎨"},
     {"threshold": 60, "label": "Finalizing",       "emoji": "✨"},
- ]
+]
 
 SEEDANCE2_PROGRESS_STAGES = [
     {"threshold": 0,   "label": "Initializing",       "emoji": "⚙️"},
@@ -969,12 +942,9 @@ def build_progress_embed(prompt, size_label, elapsed, model_label, model_value="
 
     embed = discord.Embed(
         title="🎨  Generating Your Media",
-", inline=True)
-    embed.add        color=PROGRESS_COLOR,
-   )
-ed = discord.Embed(
-        title="❌  Generation Failed",
-        color=ERROR_COLO    embed.add_field(name="📝 Prompt", value=f"```{prompt[:200]}```", inline=False)
+        color=PROGRESS_COLOR,
+    )
+    embed.add_field(name="📝 Prompt", value=f"```{prompt[:200]}```", inline=False)
     if size_label:
         embed.add_field(name="📏 Size", value=f"`{size_label}`", inline=True)
     embed.add_field(name="🧠 Model", value=f"`{model_label}`", inline=True)
@@ -999,14 +969,15 @@ def build_success_embed(prompt, size_label, duration, model_label, model_value="
     return embed
 
 def build_error_embed(error_msg, prompt, size_label, model_label, model_value=""):
-    em
-bR,
+    embed = discord.Embed(
+        title="❌  Generation Failed",
+        color=ERROR_COLOR,
         timestamp=discord.utils.utcnow(),
     )
     embed.add_field(name="📝 Prompt", value=f"```{prompt[:200]}```", inline=False)
     if size_label:
-        embed.add_field(name="📏 Size", value=f"`{size_label}
-`_field(name="🧠 Model", value=f"`{model_label}`", inline=True)
+        embed.add_field(name="📏 Size", value=f"`{size_label}`", inline=True)
+    embed.add_field(name="🧠 Model", value=f"`{model_label}`", inline=True)
     embed.add_field(name="⚠️ Error", value=f"```{str(error_msg)[:500]}```", inline=False)
     embed.set_footer(text="Please try again later")
     return embed
@@ -1040,8 +1011,7 @@ model_choices = [
 MODEL_LABELS = {
     "nanobanana_pro": "Nano Banana Pro",
     "nanobanana_2":   "Nano Banana 2",
- discord.Attachment = None,
-       "sora_2":         "Sora 2",
+    "sora_2":         "Sora 2",
     "fal_veo3":       "Veo 3.1",
     "fal_veo3_fast":  "Veo 3.1 Fast",
     "seedance_2":     "Seedance 2",
@@ -1056,10 +1026,7 @@ async def on_ready():
 
 @discord.app_commands.allowed_installs(guilds=True, users=True)
 @discord.app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
-mpt = prompt
-
-    ref_images = []
-    if model_value == "nanoba@tree.command(name="generate", description="Generate AI media")
+@tree.command(name="generate", description="Generate AI media")
 @app_commands.describe(
     prompt="What the media should show",
     model="AI model to use (default: Nano Banana Pro)",
@@ -1085,8 +1052,8 @@ async def generate(
     ref3: discord.Attachment = None,
     ref4: discord.Attachment = None,
     ref5: discord.Attachment = None,
-    ref6
-: ref7: discord.Attachment = None,
+    ref6: discord.Attachment = None,
+    ref7: discord.Attachment = None,
     ref8: discord.Attachment = None,
     ref9: discord.Attachment = None,
 ):
@@ -1111,8 +1078,10 @@ async def generate(
         size_value = raw_size
         size_label = SIZE_LABELS.get(size_value, size_value)
 
-    actual_pr
-onana_2":
+    actual_prompt = prompt
+
+    ref_images = []
+    if model_value == "nanobanana_2":
         raw_refs = [ref1, ref2, ref3, ref4, ref5, ref6, ref7, ref8, ref9]
         bad_refs = []
         for attachment in raw_refs:
@@ -1127,8 +1096,7 @@ onana_2":
 
         if bad_refs:
             await interaction.response.send_message(
-nc def update_timer():
-        while not generation_done.is_set(                f"⚠️ Invalid images: `{'`, `'.join(bad_refs)}`",
+                f"⚠️ Invalid images: `{'`, `'.join(bad_refs)}`",
                 ephemeral=True,
             )
             return
@@ -1162,15 +1130,15 @@ nc def update_timer():
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
                 None, run_generation, actual_prompt, size_value, model_value, ref_images
-ck to downloa            )
+            )
             generation_result["data"] = result
         except Exception as exc:
             generation_result["error"] = str(exc)
         finally:
             generation_done.set()
 
-    as
-y):
+    async def update_timer():
+        while not generation_done.is_set():
             await asyncio.sleep(3)
             if generation_done.is_set():
                 break
@@ -1214,13 +1182,12 @@ y):
                 media_file = discord.File(io.BytesIO(media_bytes), filename=filename)
                 if is_image:
                     success_embed.set_image(url=f"attachment://{filename}")
-  embed = discord            else:
-                success_embed.add_field(
-                    name="📥 Download",
-                    value=f"[Cl
-id]({download_url})",
-                    inline=False,
-                )
+                else:
+                    success_embed.add_field(
+                        name="📥 Download",
+                        value=f"[Click to download]({download_url})",
+                        inline=False,
+                    )
         except Exception as dl_err:
             print(f"Download error: {dl_err}")
             if download_url:
@@ -1254,8 +1221,7 @@ async def ping_cmd(interaction: discord.Interaction):
 @discord.app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
 @tree.command(name="sizes", description="View all available media sizes")
 async def sizes_cmd(interaction: discord.Interaction):
- 
- .Embed(
+    embed = discord.Embed(
         title="📏  Available Sizes",
         description="Use these with `/generate` to pick your resolution.",
         color=INFO_COLOR,
@@ -1313,6 +1279,7 @@ if __name__ == "__main__":
     keep_alive()
     
     # التحقق من وجود التوكن
+    TOKEN = os.environ.get("DISCORD_BOT_TOKEN")
     if not TOKEN:
         print("❌ ERROR: DISCORD_BOT_TOKEN environment variable not set!")
         exit(1)
