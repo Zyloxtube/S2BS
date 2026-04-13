@@ -18,26 +18,6 @@ from html.parser import HTMLParser
 from Crypto.PublicKey import RSA
 from Crypto.Cipher import PKCS1_v1_5
 
-# ─── إعداد خادم الويب (لـ Render) ─────────────────────────────────────────────
-app = Flask(__name__)
-
-@app.route('/')
-def home():
-    return "🤖 Bot is alive and running 24/7!"
-
-@app.route('/ping')
-def ping():
-    return "pong"
-
-def run_web():
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
-
-def keep_alive():
-    t = Thread(target=run_web)
-    t.start()
-
-# ─── إعدادات البوت ─────────────────────────────────────────────────────────
-TOKEN = os.environ.get("DISCORD_BOT_TOKEN")
 PASSWORD = "Test1234Abc!"
 COGNITO_CLIENT_ID = "1kvg8re5bgu9ljqnnkjosu477k"
 USER_POOL_ID = "eu-west-1_7hEawdalF"
@@ -64,6 +44,27 @@ intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
+
+# ─── إعداد خادم الويب (لـ Render) ─────────────────────────────────────────────
+app = Flask(__name__)
+
+@app.route('/')
+def home():
+    return "🤖 Bot is alive and running 24/7!"
+
+@app.route('/ping')
+def ping():
+    return "pong"
+
+def run_web():
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
+
+def keep_alive():
+    t = Thread(target=run_web)
+    t.start()
+
+# ─── إعدادات البوت ─────────────────────────────────────────────────────────
+TOKEN = os.environ.get("DISCORD_BOT_TOKEN")
 
 # ─── Temp email ───────────────────────────────────────────────────────────────
 
@@ -102,6 +103,8 @@ class TempEmail:
                 self.seen_ids.add(email["mail_id"])
                 code = self._extract_code(email.get("mail_subject", ""))
                 if not code:
+                    code = self._extract_code(email.get("mail_from", ""))
+                if not code:
                     code = self._fetch_body_code(email["mail_id"])
                 if code:
                     return code
@@ -118,9 +121,9 @@ class TempEmail:
             d = r.json()
             body = re.sub(r"<[^>]+>", "", d.get("mail_body", "") or "")
             return (
-                self._extract_code(d.get("mail_subject", ""))
-                or self._extract_code(d.get("mail_from", ""))
-                or self._extract_code(body)
+                self._extract_code(d.get("mail_subject", "")) or
+                self._extract_code(d.get("mail_from", "")) or
+                self._extract_code(body)
             )
         except Exception:
             return None
@@ -270,7 +273,7 @@ def create_workspace(id_token):
 
     try:
         requests.post(
-            "https://api.synthesia.io/user/questionnaire",
+            "https://api.synthesia.io/user/onboarding/questionnaire",
             headers=headers,
             json={
                 "company": {"size": "emerging", "industry": "professional_services"},
@@ -313,7 +316,7 @@ SIZE_TO_ASPECT_RATIO = {
     "1080x1080": "1:1",
 }
 
-VIDEO_MODELS = {"fal_veo3", "fal_veo3_fast", "sora_2", "seedance_2", "wan_2.7"}
+VIDEO_MODELS = {"fal_veo3", "fal_veo3_fast", "sora_2", "seedance_2"}
 
 def start_synthesia_generation(token, workspace_id, prompt, size, model):
     try:
@@ -322,13 +325,6 @@ def start_synthesia_generation(token, workspace_id, prompt, size, model):
         if model == "sora_2":
             model_request = {
                 "modelName": "sora_2",
-                "generateAudio": True,
-                "aspectRatio": aspect_ratio,
-            }
-            media_type = "video"
-        elif model == "wan_2.7":
-            model_request = {
-                "modelName": "wan_2.7",
                 "generateAudio": True,
                 "aspectRatio": aspect_ratio,
             }
@@ -366,9 +362,9 @@ def start_synthesia_generation(token, workspace_id, prompt, size, model):
     except requests.exceptions.RequestException as e:
         raise RuntimeError(f"Failed to start generation: {str(e)}")
 
-def poll_synthesia(token, asset_id, timeout=600, interval=8):
-    deadline = time.time() + timeout
-    while time.time() < deadline:
+def poll_synthesia(token, asset_id, interval=8):
+    # NO TIMEOUT - will poll forever until ready or failed
+    while True:
         try:
             r = requests.get(
                 f"https://api.synthesia.io/assets/{asset_id}",
@@ -386,7 +382,6 @@ def poll_synthesia(token, asset_id, timeout=600, interval=8):
         except requests.exceptions.RequestException as e:
             print(f"Polling error: {e}, retrying...")
             time.sleep(interval)
-    raise TimeoutError("Generation timed out after 10 minutes.")
 
 def run_synthesia_generation(prompt: str, size: str, model: str) -> dict:
     temp = TempEmail()
@@ -402,14 +397,14 @@ def run_synthesia_generation(prompt: str, size: str, model: str) -> dict:
     token = sign_in_with_cognito(email)
     workspace_id = create_workspace(token)
     asset_id = start_synthesia_generation(token, workspace_id, prompt, size, model)
-    result = poll_synthesia(token, asset_id)
+    result = poll_synthesia(token, asset_id)  # NO TIMEOUT HERE
 
     return {
         "url": result.get("url", ""),
         "download_url": result.get("downloadUrl", ""),
     }
 
-# ─── Wan 2.7 via OreateAI ─────────────────────────────────────────────────────
+# ─── OreateAI image generation ───────────────────────────────────────────────
 
 _OREATE_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 
@@ -436,7 +431,7 @@ def _oreate_encrypt_password(plain_text: str, public_key_pem: str) -> str:
     cipher = PKCS1_v1_5.new(key)
     return _base64.b64encode(cipher.encrypt(plain_text.encode())).decode()
 
-def _oreate_create_session(is_video: bool = False) -> tuple:
+def _oreate_create_session() -> tuple:
     sess = requests.Session()
     sess.headers.update({
         "User-Agent": _OREATE_UA,
@@ -446,12 +441,9 @@ def _oreate_create_session(is_video: bool = False) -> tuple:
         "Client-Type": "pc",
     })
 
-    vertical = "aiVideo" if is_video else "aiImage"
-    fr_value = "GGSEMVIDEO" if is_video else "GGSEMIMAGE"
-
     ticket_res = sess.get(
         f"{OREATE_BASE}/passport/api/getticket",
-        headers={"Referer": f"{OREATE_BASE}/home/vertical/{vertical}"},
+        headers={"Referer": f"{OREATE_BASE}/home/vertical/aiImage"},
         timeout=30,
     )
     ticket_res.raise_for_status()
@@ -469,14 +461,15 @@ def _oreate_create_session(is_video: bool = False) -> tuple:
         headers={
             "Content-Type": "application/json",
             "Origin": OREATE_BASE,
-            "Referer": f"{OREATE_BASE}/home/vertical/{vertical}",
+            "Referer": f"{OREATE_BASE}/home/vertical/aiImage",
         },
         json={
-            "fr": fr_value,
+            "fr": "GGSEMIMAGE",
             "email": email,
             "ticketID": ticket_id,
             "password": encrypted_password,
             "jt": "",
+            "source": "aiImage",
         },
         timeout=30,
     )
@@ -488,7 +481,7 @@ def _oreate_create_session(is_video: bool = False) -> tuple:
 
     sess.headers.update({
         "Origin": OREATE_BASE,
-        "Referer": f"{OREATE_BASE}/home/chat/{vertical}",
+        "Referer": f"{OREATE_BASE}/home/chat/aiImage",
     })
     return sess, email, password
 
@@ -505,7 +498,6 @@ def _oreate_upload_image(sess: requests.Session, image_bytes: bytes, filename: s
         },
         json={
             "mFileList": [{"filename": clean_name, "fileExt": ext, "size": len(image_bytes)}],
-            "source": "aiImage",
         },
         timeout=30,
     )
@@ -573,15 +565,10 @@ def _oreate_upload_image(sess: requests.Session, image_bytes: bytes, filename: s
         "status": 1,
     }
 
-def _oreate_extract_media_url(text: str):
+def _oreate_extract_image_url(text: str):
     if not text:
         return None
-    # Extract video URLs
-    m = re.search(r"(https?://[^\s\"'<>]+\.(mp4|mov|avi|webm|mkv)(\?[^\s\"'<>]*)?)", text, re.IGNORECASE)
-    if m:
-        return m.group(1)
-    # Extract image URLs
-    m = re.search(r"\((https?://[^)\s]+)\)", text)
+    m = re.search(r"\((https?://[^\s)]+)\)", text)
     if m:
         return m.group(1)
     m = re.search(r"(https?://[^\s\"'<>]+\.(jpg|jpeg|png|gif|webp|bmp|svg)(\?[^\s\"'<>]*)?)", text, re.IGNORECASE)
@@ -595,7 +582,7 @@ def _oreate_extract_media_url(text: str):
 def run_oreate_generation(prompt: str, size: str, ref_images: list) -> dict:
     final_prompt = prompt
 
-    sess, email, password = _oreate_create_session(is_video=False)
+    sess, email, password = _oreate_create_session()
 
     attachments = []
     for idx, (image_bytes, filename, file_ext) in enumerate(ref_images[:9]):
@@ -654,7 +641,7 @@ def run_oreate_generation(prompt: str, size: str, ref_images: list) -> dict:
             if not json_str:
                 continue
 
-            extracted = _oreate_extract_media_url(json_str)
+            extracted = _oreate_extract_image_url(json_str)
             if extracted and "." in extracted.split("/")[-1]:
                 image_url = extracted
                 break
@@ -663,7 +650,7 @@ def run_oreate_generation(prompt: str, size: str, ref_images: list) -> dict:
                 data = _json.loads(json_str)
                 result_text = data.get("data", {}).get("result", "")
                 if result_text:
-                    extracted = _oreate_extract_media_url(result_text)
+                    extracted = _oreate_extract_image_url(result_text)
                     if extracted:
                         image_url = extracted
                         break
@@ -681,7 +668,7 @@ def run_oreate_generation(prompt: str, size: str, ref_images: list) -> dict:
             break
 
     if not image_url:
-        image_url = _oreate_extract_media_url(full_response)
+        image_url = _oreate_extract_image_url(full_response)
 
     if not image_url:
         raise RuntimeError("OreateAI: no image URL found in response")
@@ -690,95 +677,6 @@ def run_oreate_generation(prompt: str, size: str, ref_images: list) -> dict:
         "url": image_url,
         "download_url": image_url,
         "is_nanobanana2": True,
-    }
-
-def run_wan_2_7_generation(prompt: str) -> dict:
-    sess, email, password = _oreate_create_session(is_video=True)
-
-    chat_res = sess.post(
-        f"{OREATE_BASE}/oreate/create/chat",
-        headers={"Content-Type": "application/json"},
-        json={"type": "aiVideo", "docId": ""},
-        timeout=30,
-    )
-    chat_res.raise_for_status()
-    chat_data = chat_res.json()
-    chat_id = chat_data.get("data", {}).get("chatId")
-    if not chat_id:
-        raise RuntimeError(f"OreateAI: no chatId in response")
-
-    sse_res = sess.post(
-        f"{OREATE_BASE}/oreate/sse/stream",
-        headers={"Content-Type": "application/json", "Accept": "text/event-stream"},
-        json={
-            "clientType": "pc",
-            "type": "chat",
-            "chatType": "aiVideo",
-            "chatId": chat_id,
-            "focusId": chat_id,
-            "from": "home",
-            "isFirst": True,
-            "messages": [{"role": "user", "content": prompt, "attachments": []}],
-        },
-        stream=True,
-        timeout=600,
-    )
-    sse_res.raise_for_status()
-
-    video_url = None
-    buf = ""
-    full_response = ""
-
-    for chunk in sse_res.iter_content(chunk_size=None, decode_unicode=True):
-        if not chunk:
-            continue
-        buf += chunk
-        full_response += chunk
-        lines = buf.split("\n")
-        buf = lines[-1]
-
-        for line in lines[:-1]:
-            if not line.startswith("data:"):
-                continue
-            json_str = line[5:].strip()
-            if not json_str:
-                continue
-
-            extracted = _oreate_extract_media_url(json_str)
-            if extracted:
-                video_url = extracted
-                break
-
-            try:
-                data = _json.loads(json_str)
-                result_text = data.get("data", {}).get("result", "")
-                if result_text:
-                    extracted = _oreate_extract_media_url(result_text)
-                    if extracted:
-                        video_url = extracted
-                        break
-                for key in ("videoUrl", "url", "video_url"):
-                    val = data.get("data", {}).get(key)
-                    if val and val.startswith("http"):
-                        video_url = val
-                        break
-                if video_url:
-                    break
-            except (_json.JSONDecodeError, KeyError, TypeError):
-                pass
-
-        if video_url:
-            break
-
-    if not video_url:
-        video_url = _oreate_extract_media_url(full_response)
-
-    if not video_url:
-        raise RuntimeError("Wan 2.7: no video URL found in response")
-
-    return {
-        "url": video_url,
-        "download_url": video_url,
     }
 
 # ─── Seedance 2 via Buzzy ─────────────────────────────────────────────────────
@@ -985,8 +883,6 @@ def run_generation(prompt: str, size: str, model: str, ref_images: list = None) 
         return run_oreate_generation(prompt, size, ref_images or [])
     if model == "seedance_2":
         return run_seedance2_generation(prompt)
-    if model == "wan_2.7":
-        return run_wan_2_7_generation(prompt)
     return run_synthesia_generation(prompt, size, model)
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -1012,7 +908,7 @@ NB2_PROGRESS_STAGES = [
     {"threshold": 3,  "label": "Creating account", "emoji": "📧"},
     {"threshold": 10, "label": "Generating image", "emoji": "🎨"},
     {"threshold": 60, "label": "Finalizing",       "emoji": "✨"},
-]
+ ]
 
 SEEDANCE2_PROGRESS_STAGES = [
     {"threshold": 0,   "label": "Initializing",       "emoji": "⚙️"},
@@ -1022,14 +918,6 @@ SEEDANCE2_PROGRESS_STAGES = [
     {"threshold": 60,  "label": "Generating video",   "emoji": "🎨"},
     {"threshold": 300, "label": "Rendering",          "emoji": "🎬"},
     {"threshold": 600, "label": "Finalizing",         "emoji": "✨"},
-]
-
-WAN27_PROGRESS_STAGES = [
-    {"threshold": 0,   "label": "Initializing",       "emoji": "⚙️"},
-    {"threshold": 5,   "label": "Creating account",   "emoji": "📧"},
-    {"threshold": 15,  "label": "Starting generation","emoji": "🎨"},
-    {"threshold": 60,  "label": "Generating video",   "emoji": "🎬"},
-    {"threshold": 300, "label": "Finalizing",         "emoji": "✨"},
 ]
 
 def get_stage(elapsed, stages):
@@ -1046,9 +934,6 @@ def build_progress_embed(prompt, size_label, elapsed, model_label, model_value="
     elif model_value == "seedance_2":
         stages = SEEDANCE2_PROGRESS_STAGES
         estimated_total = 840
-    elif model_value == "wan_2.7":
-        stages = WAN27_PROGRESS_STAGES
-        estimated_total = 600
     else:
         stages = PROGRESS_STAGES
         estimated_total = 180
@@ -1126,7 +1011,6 @@ model_choices = [
     app_commands.Choice(name="Veo 3.1",         value="fal_veo3"),
     app_commands.Choice(name="Veo 3.1 Fast",    value="fal_veo3_fast"),
     app_commands.Choice(name="Seedance 2",      value="seedance_2"),
-    app_commands.Choice(name="Wan 2.7",         value="wan_2.7"),
 ]
 
 MODEL_LABELS = {
@@ -1136,7 +1020,6 @@ MODEL_LABELS = {
     "fal_veo3":       "Veo 3.1",
     "fal_veo3_fast":  "Veo 3.1 Fast",
     "seedance_2":     "Seedance 2",
-    "wan_2.7":        "Wan 2.7",
 }
 
 @client.event
@@ -1190,9 +1073,6 @@ async def generate(
     elif model_value == "seedance_2":
         size_value = "1280x720"
         size_label = "AI decided"
-    elif model_value == "wan_2.7":
-        size_value = "1280x720"
-        size_label = "AI decided"
     elif raw_size == "ai_decide" or raw_size is None:
         if model_value in VIDEO_MODELS:
             size_value = random.choice(["1280x720", "720x1280"])
@@ -1208,14 +1088,23 @@ async def generate(
     ref_images = []
     if model_value == "nanobanana_2":
         raw_refs = [ref1, ref2, ref3, ref4, ref5, ref6, ref7, ref8, ref9]
+        bad_refs = []
         for attachment in raw_refs:
             if attachment is None:
                 continue
             fname = attachment.filename
             ext = fname.rsplit(".", 1)[-1].lower() if "." in fname else ""
             if not ext or f".{ext}" not in VALID_IMAGE_EXTENSIONS:
-                continue  # Skip invalid files instead of blocking
-            ref_images.append((attachment, fname, ext))
+                bad_refs.append(fname)
+            else:
+                ref_images.append((attachment, fname, ext))
+
+        if bad_refs:
+            await interaction.response.send_message(
+                f"⚠️ Invalid images: `{'`, `'.join(bad_refs)}`",
+                ephemeral=True,
+            )
+            return
 
         downloaded = []
         for attachment_obj, fname, ext in ref_images:
@@ -1225,6 +1114,13 @@ async def generate(
             except Exception as e:
                 print(f"Failed to download {fname}: {e}")
         ref_images = downloaded
+    else:
+        if any(r is not None for r in [ref1, ref2, ref3, ref4, ref5, ref6, ref7, ref8, ref9]):
+            await interaction.response.send_message(
+                "⚠️ Reference images only work with **Nano Banana 2**.",
+                ephemeral=True,
+            )
+            return
 
     start_embed = build_progress_embed(prompt, size_label, 0, model_label, model_value)
     await interaction.response.send_message(embed=start_embed)
@@ -1291,12 +1187,12 @@ async def generate(
                 media_file = discord.File(io.BytesIO(media_bytes), filename=filename)
                 if is_image:
                     success_embed.set_image(url=f"attachment://{filename}")
-            else:
-                success_embed.add_field(
-                    name="📥 Download",
-                    value=f"[Click to download]({download_url})",
-                    inline=False,
-                )
+                else:
+                    success_embed.add_field(
+                        name="📥 Download",
+                        value=f"[Click to download]({download_url})",
+                        inline=False,
+                    )
         except Exception as dl_err:
             print(f"Download error: {dl_err}")
             if download_url:
@@ -1365,7 +1261,7 @@ async def models_cmd(interaction: discord.Interaction):
         name="Image models",
         value=(
             "`Nano Banana Pro` — fast AI image generation\n"
-            "`Nano Banana 2` — image generation with optional reference images"
+            "`Nano Banana 2` — image generation with up to 9 reference images"
         ),
         inline=False,
     )
@@ -1375,8 +1271,7 @@ async def models_cmd(interaction: discord.Interaction):
             "`Sora 2` — OpenAI Sora v2\n"
             "`Veo 3.1` — Google Veo 3.1\n"
             "`Veo 3.1 Fast` — Google Veo 3.1 (faster)\n"
-            "`Seedance 2` — Seedance v2\n"
-            "`Wan 2.7` — Wan 2.7 video generation"
+            "`Seedance 2` — Seedance v2"
         ),
         inline=False,
     )
