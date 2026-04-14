@@ -1232,9 +1232,12 @@ async def generate(
 
     media_file = None
     download_url = result.get("download_url") or result.get("url")
+    
+    # For Nano Banana 2, treat as image (same as Nano Banana Pro)
+    is_image = model_value not in VIDEO_MODELS or model_value == "nanobanana_2"
+    
     if download_url:
         try:
-            is_image = model_value not in VIDEO_MODELS
             media_bytes = requests.get(download_url, timeout=60).content
             ext = "png" if is_image else "mp4"
             filename = f"generated_media.{ext}"
@@ -1242,6 +1245,7 @@ async def generate(
             if len(media_bytes) < 25 * 1024 * 1024:
                 media_file = discord.File(io.BytesIO(media_bytes), filename=filename)
                 if is_image:
+                    # For images (including Nano Banana 2), embed them directly
                     success_embed.set_image(url=f"attachment://{filename}")
                 else:
                     success_embed.add_field(
@@ -1249,6 +1253,13 @@ async def generate(
                         value=f"[Click to download]({download_url})",
                         inline=False,
                     )
+            else:
+                # File too large, just provide download link
+                success_embed.add_field(
+                    name="📥 Download",
+                    value=f"[Click to download]({download_url})",
+                    inline=False,
+                )
         except Exception as dl_err:
             print(f"Download error: {dl_err}")
             if download_url:
@@ -1316,7 +1327,7 @@ async def models_cmd(interaction: discord.Interaction):
     embed.add_field(
         name="Image models",
         value=(
-            "`Nano Banana Pro` — maximum nano banana 2 quality \n"
+            "`Nano Banana Pro` — fast AI image generation\n"
             "`Nano Banana 2` — image generation with up to 9 reference images"
         ),
         inline=False,
