@@ -1241,20 +1241,13 @@ async def generate(
             media_bytes = requests.get(download_url, timeout=60).content
             ext = "png" if is_image else "mp4"
             filename = f"generated_media.{ext}"
-
-            if len(media_bytes) < 25 * 1024 * 1024:
-                media_file = discord.File(io.BytesIO(media_bytes), filename=filename)
-                if is_image:
-                    # For images (including Nano Banana 2), embed them directly
-                    success_embed.set_image(url=f"attachment://{filename}")
-                else:
-                    success_embed.add_field(
-                        name="📥 Download",
-                        value=f"[Click to download]({download_url})",
-                        inline=False,
-                    )
+            
+            # Always try to embed the image - no size limit check
+            media_file = discord.File(io.BytesIO(media_bytes), filename=filename)
+            if is_image:
+                # For images (including Nano Banana 2), embed them directly
+                success_embed.set_image(url=f"attachment://{filename}")
             else:
-                # File too large, just provide download link
                 success_embed.add_field(
                     name="📥 Download",
                     value=f"[Click to download]({download_url})",
