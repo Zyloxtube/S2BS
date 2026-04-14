@@ -326,7 +326,7 @@ SIZE_TO_ASPECT_RATIO = {
     "1080x1080": "1:1",
 }
 
-VIDEO_MODELS = {"fal_veo3", "fal_veo3_fast", "sora_2", "seedance_2"}
+VIDEO_MODELS = {"fal_veo3", "fal_veo3_fast", "sora_2", "seedance_2", "wan_2_6"}
 
 def start_synthesia_generation(token, workspace_id, prompt, size, model):
     try:
@@ -751,6 +751,202 @@ def run_oreate_generation(prompt: str, size: str, ref_images: list) -> dict:
         "is_nanobanana2": True,
     }
 
+# ─── Wan 2.6 Video Generation via OreateAI ─────────────────────────────────────
+
+def _oreate_generate_video_password() -> str:
+    """Generate password for video account"""
+    chars = []
+    for _ in range(8):
+        chars.append(random.choice("0123456789abcdef"))
+    return "Aa" + "".join(chars) + "1"
+
+def run_wan26_generation(prompt: str, size: str) -> dict:
+    """Generate video using Wan 2.6 via OreateAI"""
+    
+    # Step 1: Get ticket and public key (for video)
+    ticket_res = requests.get(
+        f"{OREATE_BASE}/passport/api/getticket",
+        headers={
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Client-Type": "pc",
+            "Locale": "en-US",
+            "Referer": f"{OREATE_BASE}/home/vertical/aiVideo",
+            "User-Agent": _OREATE_UA,
+        },
+        timeout=30,
+    )
+    ticket_res.raise_for_status()
+    ticket_data = ticket_res.json()
+    
+    ticket_id = ticket_data["data"]["ticketID"]
+    public_key = ticket_data["data"]["pk"]
+    
+    # Extract cookies from ticket response
+    cookies = ticket_res.cookies.get_dict()
+    
+    # Step 2: Generate account credentials
+    email = _oreate_generate_email()
+    password = _oreate_generate_video_password()
+    encrypted_password = _oreate_encrypt_password(password, public_key)
+    
+    # Step 3: Create account (using GGSEMVIDEO for video)
+    signup_res = requests.post(
+        f"{OREATE_BASE}/passport/api/emailsignupin",
+        headers={
+            "Accept": "application/json, text/plain, */*",
+            "Content-Type": "application/json",
+            "Cookie": "; ".join([f"{k}={v}" for k, v in cookies.items()]),
+            "Locale": "en-US",
+            "Origin": OREATE_BASE,
+            "Referer": f"{OREATE_BASE}/home/vertical/aiVideo",
+            "User-Agent": _OREATE_UA,
+        },
+        json={
+            "fr": "GGSEMVIDEO",  # Different from image (GGSEMIMAGE)
+            "email": email,
+            "ticketID": ticket_id,
+            "password": encrypted_password,
+            "jt": "",
+        },
+        timeout=30,
+    )
+    signup_res.raise_for_status()
+    signup_data = signup_res.json()
+    
+    if signup_data.get("status", {}).get("code") != 0:
+        raise RuntimeError(f"Wan 2.6 signup failed: {signup_data.get('status', {}).get('msg')}")
+    
+    # Update cookies with session cookies
+    session_cookies = signup_res.cookies.get_dict()
+    session_cookies.update(cookies)
+    
+    # Extract OUID if present
+    ouid = session_cookies.get('OUID', '')
+    
+    # Step 4: Create video chat session
+    chat_res = requests.post(
+        f"{OREATE_BASE}/oreate/create/chat",
+        headers={
+            "Accept": "application/json, text/plain, */*",
+            "Content-Type": "application/json",
+            "Locale": "en-US",
+            "Origin": OREATE_BASE,
+            "Referer": f"{OREATE_BASE}/home/chat/aiVideo",
+            "User-Agent": _OREATE_UA,
+            "Cookie": "; ".join([f"{k}={v}" for k, v in session_cookies.items()]),
+        },
+        json={"type": "aiVideo", "docId": ""},  # Different from image (aiImage)
+        timeout=30,
+    )
+    chat_res.raise_for_status()
+    chat_data = chat_res.json()
+    chat_id = chat_data.get("data", {}).get("chatId")
+    if not chat_id:
+        raise RuntimeError(f"Wan 2.6: no chatId in response")
+    
+    # Step 5: Generate video via SSE stream
+    jt_token = "31$eyJrIj4iOCI0Iix5IkciQEdIRExETEtPSEpOUiJJIkFqIjwiNTw9OUE5QT08Pz5CQSI+IjYzIlEiSlFSTlZOVTk5ODY1OiIzIit5IkYiQD9AIj4iOCJQIklHS09KUExQIi0ibSI/Il1Yem52dVYxXTV2M0t2R1grXGZBQDNqTjx6bk5vVDxyclRyY18pPC8tdGpGRkNhWHloM2l0NGNlZDNCd2dIdl1vKXRZQ0VeRWY2L0lcN3pOKTpEUkAtNFA8S0xnRFg1XjY9eTBcWFVxX2dEeHhNbUFqTWNMZU9mV1VRVnFIeXhRYHNyTlQzVUVnSDFsRWxbWlxuaEo7OzlpcExQSXNqVzY8cj49PVAqcmEwQV1JblxgPjVjbFFSLEE2TGV0cGdmR1gzTz8tWXZkUlpKZSlEWUE6WltrajpDQGVQMzZyM3A5bHNdYzxSY29USUlrWmNlb2MwTl5KLk5zVUR4NURnPjc6W3o1TFk/djFyR2o1V3hceilvNy9nUms0c2NRZjQ5djcwOipgL09YWXVFdEtnNDMtNylvT3Zzblc0dnBQV0d4T088Xm5xVFJIaTdcS2BrbkpQW11wLmlfb1VyUTMzbk42XixTQXFiU3k/LF9EW2BgeGwyYTMtbmYzOTVtR290LjxBMC09cWdCW1FJVHhkLT03ODpCZC8xQ2dWTDc1SyxOMi4seEA7UlQxKUlPfCk1X2BjO3MubVBScWJbODh4VWl1L0oscHRdclJXQV90Zmg1WWBJL2tVLjtcfDIyfGZnOmg9QUFDQ3BEQXN3SERNdkd5TXpPU1MuUFUzYzQ5In0="
+    
+    request_body = {
+        "jt": jt_token,
+        "ua": _OREATE_UA,
+        "js_env": "h5",
+        "extra": {
+            "email": email,
+            "vip": "0",
+            "reg_ts": int(time.time()),
+            "deviceID": "EB78F52161CDCA4F55EF242566DAC05E:FG=1",
+            "bid": "19caf744b12438441a8a1c",
+            "doc_name": "",
+            "module_name": "gpt4o",
+        },
+        "clientType": "pc",
+        "type": "chat",
+        "chatType": "aiVideo",  # Different from image
+        "chatTitle": "Unnamed Session",
+        "focusId": chat_id,
+        "chatId": chat_id,
+        "from": "home",
+        "messages": [{
+            "role": "user",
+            "content": prompt,
+            "attachments": [],
+        }],
+        "isFirst": True,
+    }
+    
+    sse_res = requests.post(
+        f"{OREATE_BASE}/oreate/sse/stream",
+        headers={
+            "Accept": "text/event-stream",
+            "Content-Type": "application/json",
+            "Locale": "en-US",
+            "Origin": OREATE_BASE,
+            "Referer": f"{OREATE_BASE}/home/chat/aiVideo",
+            "User-Agent": _OREATE_UA,
+            "Cookie": "; ".join([f"{k}={v}" for k, v in session_cookies.items()]),
+        },
+        json=request_body,
+        stream=True,
+        timeout=300,  # Longer timeout for video generation
+    )
+    sse_res.raise_for_status()
+    
+    # Parse SSE stream for video URL
+    video_url = None
+    full_response = ""
+    
+    for chunk in sse_res.iter_content(chunk_size=None, decode_unicode=True):
+        if not chunk:
+            continue
+        full_response += chunk
+        
+        # Look for video URLs in the stream
+        lines = chunk.split("\n")
+        for line in lines:
+            if line.startswith("data: "):
+                try:
+                    data = _json.loads(line[6:])
+                    # Check for video URL in various fields
+                    if data.get("data", {}).get("videoUrl"):
+                        video_url = data["data"]["videoUrl"]
+                        break
+                    if data.get("data", {}).get("url"):
+                        url = data["data"]["url"]
+                        if url and any(url.endswith(ext) for ext in ['.mp4', '.mov', '.avi', '.webm', '.mkv']):
+                            video_url = url
+                            break
+                    if data.get("videoUrl"):
+                        video_url = data["videoUrl"]
+                        break
+                except (_json.JSONDecodeError, KeyError):
+                    pass
+        
+        # Also look for URLs in the raw text
+        if not video_url:
+            url_match = re.search(r"(https?://[^\s\"'<>]+\.(mp4|mov|avi|webm|mkv)(\?[^\s\"'<>]*)?)", chunk, re.IGNORECASE)
+            if url_match:
+                video_url = url_match.group(1)
+                break
+        
+        if video_url:
+            break
+    
+    if not video_url:
+        # Final fallback - search entire response
+        url_match = re.search(r"(https?://[^\s\"'<>]+\.(mp4|mov|avi|webm|mkv)(\?[^\s\"'<>]*)?)", full_response, re.IGNORECASE)
+        if url_match:
+            video_url = url_match.group(1)
+    
+    if not video_url:
+        raise RuntimeError("Wan 2.6: no video URL found in response")
+    
+    return {
+        "url": video_url,
+        "download_url": video_url,
+    }
+
 # ─── Seedance 2 via Buzzy ─────────────────────────────────────────────────────
 
 class _HTMLTextExtractor(HTMLParser):
@@ -955,6 +1151,8 @@ def run_generation(prompt: str, size: str, model: str, ref_images: list = None) 
         return run_oreate_generation(prompt, size, ref_images or [])
     if model == "seedance_2":
         return run_seedance2_generation(prompt)
+    if model == "wan_2_6":
+        return run_wan26_generation(prompt, size)
     return run_synthesia_generation(prompt, size, model)
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -982,6 +1180,14 @@ NB2_PROGRESS_STAGES = [
     {"threshold": 60, "label": "Finalizing",       "emoji": "✨"},
 ]
 
+WAN26_PROGRESS_STAGES = [
+    {"threshold": 0,   "label": "Initializing",       "emoji": "⚙️"},
+    {"threshold": 5,   "label": "Creating account",   "emoji": "📧"},
+    {"threshold": 10,  "label": "Generating video",   "emoji": "🎨"},
+    {"threshold": 180, "label": "Rendering",          "emoji": "🎬"},
+    {"threshold": 300, "label": "Finalizing",         "emoji": "✨"},
+]
+
 SEEDANCE2_PROGRESS_STAGES = [
     {"threshold": 0,   "label": "Initializing",       "emoji": "⚙️"},
     {"threshold": 5,   "label": "Creating account",   "emoji": "📧"},
@@ -1006,6 +1212,9 @@ def build_progress_embed(prompt, size_label, elapsed, model_label, model_value="
     elif model_value == "seedance_2":
         stages = SEEDANCE2_PROGRESS_STAGES
         estimated_total = 840
+    elif model_value == "wan_2_6":
+        stages = WAN26_PROGRESS_STAGES
+        estimated_total = 360
     else:
         stages = PROGRESS_STAGES
         estimated_total = 180
@@ -1083,6 +1292,7 @@ model_choices = [
     app_commands.Choice(name="Veo 3.1",         value="fal_veo3"),
     app_commands.Choice(name="Veo 3.1 Fast",    value="fal_veo3_fast"),
     app_commands.Choice(name="Seedance 2",      value="seedance_2"),
+    app_commands.Choice(name="Wan 2.6",         value="wan_2_6"),
 ]
 
 MODEL_LABELS = {
@@ -1092,6 +1302,7 @@ MODEL_LABELS = {
     "fal_veo3":       "Veo 3.1",
     "fal_veo3_fast":  "Veo 3.1 Fast",
     "seedance_2":     "Seedance 2",
+    "wan_2_6":        "Wan 2.6",
 }
 
 @client.event
@@ -1142,9 +1353,9 @@ async def generate(
     if model_value == "nanobanana_2":
         size_value = raw_size or "ai_decide"
         size_label = "AI decided"
-    elif model_value == "seedance_2":
+    elif model_value == "seedance_2" or model_value == "wan_2_6":
         size_value = "1280x720"
-        size_label = "AI decided"
+        size_label = "16:9"
     elif raw_size == "ai_decide" or raw_size is None:
         if model_value in VIDEO_MODELS:
             size_value = random.choice(["1280x720", "720x1280"])
@@ -1255,20 +1466,29 @@ async def generate(
             response.raise_for_status()
             media_bytes = response.content
             
-            # Determine if it's an image (Nano Banana Pro or Nano Banana 2)
+            # Determine if it's an image or video
             is_image = model_value not in VIDEO_MODELS or model_value == "nanobanana_2"
             ext = "png" if is_image else "mp4"
             filename = f"generated_media.{ext}"
             
-            media_file = discord.File(io.BytesIO(media_bytes), filename=filename)
-            if is_image:
-                success_embed.set_image(url=f"attachment://{filename}")
-            else:
+            # For videos, check file size (Discord has 25MB limit for attachments)
+            if not is_image and len(media_bytes) > 25 * 1024 * 1024:
+                # Video too large for Discord, just provide download link
                 success_embed.add_field(
                     name="📥 Download",
-                    value=f"[Click to download]({download_url})",
+                    value=f"[Click to download video]({download_url})",
                     inline=False,
                 )
+            else:
+                media_file = discord.File(io.BytesIO(media_bytes), filename=filename)
+                if is_image:
+                    success_embed.set_image(url=f"attachment://{filename}")
+                else:
+                    success_embed.add_field(
+                        name="📥 Download",
+                        value=f"[Click to download video]({download_url})",
+                        inline=False,
+                    )
         except Exception as dl_err:
             print(f"Download error: {dl_err}")
             if download_url:
@@ -1347,7 +1567,8 @@ async def models_cmd(interaction: discord.Interaction):
             "`Sora 2` — OpenAI Sora v2\n"
             "`Veo 3.1` — Google Veo 3.1\n"
             "`Veo 3.1 Fast` — Google Veo 3.1 (faster)\n"
-            "`Seedance 2` — Seedance v2"
+            "`Seedance 2` — Seedance v2\n"
+            "`Wan 2.6` — Wan 2.6 video generation"
         ),
         inline=False,
     )
