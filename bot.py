@@ -968,7 +968,7 @@ def run_wan26_generation(prompt: str, size: str, ref_images: list = None) -> dic
         "messages": [{
             "role": "user",
             "content": prompt,
-            "attachments": attachments,  # Include reference images
+            "attachments": attachments,
         }],
         "isFirst": True,
     }
@@ -986,7 +986,7 @@ def run_wan26_generation(prompt: str, size: str, ref_images: list = None) -> dic
         },
         json=request_body,
         stream=True,
-        timeout=180,  # 3 minutes timeout for video generation
+        timeout=180,
     )
     sse_res.raise_for_status()
     
@@ -1005,7 +1005,6 @@ def run_wan26_generation(prompt: str, size: str, ref_images: list = None) -> dic
             if line.startswith("data: "):
                 try:
                     data = _json.loads(line[6:])
-                    # Check for video URL in various fields
                     if data.get("data", {}).get("videoUrl"):
                         video_url = data["data"]["videoUrl"]
                         break
@@ -1025,7 +1024,6 @@ def run_wan26_generation(prompt: str, size: str, ref_images: list = None) -> dic
                 except (_json.JSONDecodeError, KeyError):
                     pass
         
-        # Also look for URLs in the raw text
         if not video_url:
             url_match = re.search(r"(https?://[^\s\"'<>]+\.(mp4|mov|avi|webm|mkv)(\?[^\s\"'<>]*)?)", chunk, re.IGNORECASE)
             if url_match:
@@ -1036,7 +1034,6 @@ def run_wan26_generation(prompt: str, size: str, ref_images: list = None) -> dic
             break
     
     if not video_url:
-        # Final fallback - search entire response
         url_match = re.search(r"(https?://[^\s\"'<>]+\.(mp4|mov|avi|webm|mkv)(\?[^\s\"'<>]*)?)", full_response, re.IGNORECASE)
         if url_match:
             video_url = url_match.group(1)
@@ -1308,7 +1305,7 @@ def get_stage(elapsed, stages):
             current = stage
     return current
 
-def build_progress_embed(prompt, size_label, elapsed, model_label, model_value=""):
+def build_progress_embed(prompt, size_label, elapsed, model_label, model_value="", ref_count=0):
     if model_value == "nanobanana_2":
         stages = NB2_PROGRESS_STAGES
         estimated_total = 60
@@ -1317,7 +1314,7 @@ def build_progress_embed(prompt, size_label, elapsed, model_label, model_value="
         estimated_total = 840
     elif model_value == "wan_2_6":
         stages = WAN26_PROGRESS_STAGES
-        estimated_total = 120  # 2 minutes max
+        estimated_total = 120
     else:
         stages = PROGRESS_STAGES
         estimated_total = 180
@@ -1337,13 +1334,15 @@ def build_progress_embed(prompt, size_label, elapsed, model_label, model_value="
     if size_label:
         embed.add_field(name="📏 Size", value=f"`{size_label}`", inline=True)
     embed.add_field(name="🧠 Model", value=f"`{model_label}`", inline=True)
+    if ref_count > 0:
+        embed.add_field(name="🖼️ Reference Images", value=f"`{ref_count} image(s)`", inline=True)
     embed.add_field(name="⏱️ Elapsed", value=f"`{format_duration(elapsed)}`", inline=True)
     embed.add_field(name=f"{stage['emoji']} Status", value=f"**{stage['label']}**", inline=True)
     embed.add_field(name="Progress", value=f"`{bar}` {int(progress * 100)}%", inline=False)
     embed.set_footer(text=f"Powered by {model_label}  |  Please wait...")
     return embed
 
-def build_success_embed(prompt, size_label, duration, model_label, model_value=""):
+def build_success_embed(prompt, size_label, duration, model_label, model_value="", ref_images=None):
     embed = discord.Embed(
         title="✅  Media Generated Successfully!",
         color=SUCCESS_COLOR,
@@ -1354,10 +1353,18 @@ def build_success_embed(prompt, size_label, duration, model_label, model_value="
         embed.add_field(name="📏 Size", value=f"`{size_label}`", inline=True)
     embed.add_field(name="🧠 Model", value=f"`{model_label}`", inline=True)
     embed.add_field(name="⏱️ Time Taken", value=f"`{format_duration(duration)}`", inline=True)
+    
+    # Add reference images section if any
+    if ref_images and len(ref_images) > 0:
+        ref_text = ""
+        for idx, (_, filename, _) in enumerate(ref_images[:9], 1):
+            ref_text += f"📷 **Ref {idx}:** `{filename}`\n"
+        embed.add_field(name=f"🖼️ Reference Images ({len(ref_images)})", value=ref_text, inline=False)
+    
     embed.set_footer(text=f"Powered by {model_label}")
     return embed
 
-def build_error_embed(error_msg, prompt, size_label, model_label, model_value=""):
+def build_error_embed(error_msg, prompt, size_label, model_label, model_value="", ref_images=None):
     embed = discord.Embed(
         title="❌  Generation Failed",
         color=ERROR_COLOR,
@@ -1367,6 +1374,14 @@ def build_error_embed(error_msg, prompt, size_label, model_label, model_value=""
     if size_label:
         embed.add_field(name="📏 Size", value=f"`{size_label}`", inline=True)
     embed.add_field(name="🧠 Model", value=f"`{model_label}`", inline=True)
+    
+    # Add reference images section if any
+    if ref_images and len(ref_images) > 0:
+        ref_text = ""
+        for idx, (_, filename, _) in enumerate(ref_images[:9], 1):
+            ref_text += f"📷 **Ref {idx}:** `{filename}`\n"
+        embed.add_field(name=f"🖼️ Reference Images ({len(ref_images)})", value=ref_text, inline=False)
+    
     embed.add_field(name="⚠️ Error", value=f"```{str(error_msg)[:500]}```", inline=False)
     embed.set_footer(text="Please try again later")
     return embed
@@ -1512,7 +1527,7 @@ async def generate(
             )
             return
 
-    start_embed = build_progress_embed(prompt, size_label, 0, model_label, model_value)
+    start_embed = build_progress_embed(prompt, size_label, 0, model_label, model_value, len(ref_images))
     await interaction.response.send_message(embed=start_embed)
     status_msg = await interaction.original_response()
 
@@ -1539,7 +1554,7 @@ async def generate(
                 break
             elapsed = time.time() - start_time
             try:
-                progress_embed = build_progress_embed(prompt, size_label, elapsed, model_label, model_value)
+                progress_embed = build_progress_embed(prompt, size_label, elapsed, model_label, model_value, len(ref_images))
                 await status_msg.edit(embed=progress_embed)
             except Exception:
                 pass
@@ -1557,12 +1572,12 @@ async def generate(
     total_time = time.time() - start_time
 
     if generation_result["error"]:
-        error_embed = build_error_embed(generation_result["error"], prompt, size_label, model_label, model_value)
+        error_embed = build_error_embed(generation_result["error"], prompt, size_label, model_label, model_value, ref_images)
         await status_msg.edit(embed=error_embed)
         return
 
     result = generation_result["data"]
-    success_embed = build_success_embed(prompt, size_label, total_time, model_label, model_value)
+    success_embed = build_success_embed(prompt, size_label, total_time, model_label, model_value, ref_images)
 
     media_file = None
     download_url = result.get("download_url") or result.get("url")
