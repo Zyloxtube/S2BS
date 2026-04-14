@@ -17,6 +17,17 @@ from Crypto.PublicKey import RSA
 from Crypto.Cipher import PKCS1_v1_5
 from flask import Flask
 from threading import Thread
+import ssl
+from requests.adapters import HTTPAdapter
+from urllib3.poolmanager import PoolManager
+
+# Custom adapter to ignore SSL verification
+class SSLAdapter(HTTPAdapter):
+    def init_poolmanager(self, *args, **kwargs):
+        kwargs['ssl_version'] = ssl.PROTOCOL_TLSv1_2
+        kwargs['cert_reqs'] = ssl.CERT_NONE
+        kwargs['assert_hostname'] = False
+        return super().init_poolmanager(*args, **kwargs)
 
 PASSWORD = "Test1234Abc!"
 COGNITO_CLIENT_ID = "1kvg8re5bgu9ljqnnkjosu477k"
@@ -44,6 +55,11 @@ intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
+
+# Create a session that ignores SSL verification for image downloads
+download_session = requests.Session()
+download_session.mount('https://', SSLAdapter())
+download_session.verify = False
 
 # ─── إعداد خادم الويب (لـ Render) ─────────────────────────────────────────────
 app = Flask(__name__)
@@ -1232,20 +1248,20 @@ async def generate(
 
     media_file = None
     download_url = result.get("download_url") or result.get("url")
-    
-    # For Nano Banana 2, treat as image (same as Nano Banana Pro)
-    is_image = model_value not in VIDEO_MODELS or model_value == "nanobanana_2"
-    
     if download_url:
         try:
-            media_bytes = requests.get(download_url, timeout=60).content
+            # Use the custom session that ignores SSL verification
+            response = download_session.get(download_url, timeout=60)
+            response.raise_for_status()
+            media_bytes = response.content
+            
+            # Determine if it's an image (Nano Banana Pro or Nano Banana 2)
+            is_image = model_value not in VIDEO_MODELS or model_value == "nanobanana_2"
             ext = "png" if is_image else "mp4"
             filename = f"generated_media.{ext}"
             
-            # Always try to embed the image - no size limit check
             media_file = discord.File(io.BytesIO(media_bytes), filename=filename)
             if is_image:
-                # For images (including Nano Banana 2), embed them directly
                 success_embed.set_image(url=f"attachment://{filename}")
             else:
                 success_embed.add_field(
