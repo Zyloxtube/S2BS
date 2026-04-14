@@ -657,7 +657,6 @@ def run_oreate_generation(prompt: str, size: str, ref_images: list) -> dict:
         raise RuntimeError(f"OreateAI: no chatId in response")
     
     # Step 6: Generate image via SSE stream
-    # Generate JT token (simplified version)
     jt_token = "31$eyJrIj4iOCI0Iix5IkciQEdIRExETEtPSEpOUiJJIkFqIjwiNTw9OUE5QT08Pz5CQSI+IjYzIlEiSlFSTlZOVTk5ODY1OiIzIit5IkYiQD9AIj4iOCJQIklHS09KUExQIi0ibSI/Il1Yem52dVYxXTV2M0t2R1grXGZBQDNqTjx6bk5vVDxyclRyY18pPC8tdGpGRkNhWHloM2l0NGNlZDNCd2dIdl1vKXRZQ0VeRWY2L0lcN3pOKTpEUkAtNFA8S0xnRFg1XjY9eTBcWFVxX2dEeHhNbUFqTWNMZU9mV1VRVnFIeXhRYHNyTlQzVUVnSDFsRWxbWlxuaEo7OzlpcExQSXNqVzY8cj49PVAqcmEwQV1JblxgPjVjbFFSLEE2TGV0cGdmR1gzTz8tWXZkUlpKZSlEWUE6WltrajpDQGVQMzZyM3A5bHNdYzxSY29USUlrWmNlb2MwTl5KLk5zVUR4NURnPjc6W3o1TFk/djFyR2o1V3hceilvNy9nUms0c2NRZjQ5djcwOipgL09YWXVFdEtnNDMtNylvT3Zzblc0dnBQV0d4T088Xm5xVFJIaTdcS2BrbkpQW11wLmlfb1VyUTMzbk42XixTQXFiU3k/LF9EW2BgeGwyYTMtbmYzOTVtR290LjxBMC09cWdCW1FJVHhkLT03ODpCZC8xQ2dWTDc1SyxOMi4seEA7UlQxKUlPfCk1X2BjO3MubVBScWJbODh4VWl1L0oscHRdclJXQV90Zmg1WWBJL2tVLjtcfDIyfGZnOmg9QUFDQ3BEQXN3SERNdkd5TXpPU1MuUFUzYzQ5In0="
     
     request_body = {
@@ -751,7 +750,7 @@ def run_oreate_generation(prompt: str, size: str, ref_images: list) -> dict:
         "is_nanobanana2": True,
     }
 
-# ─── Wan 2.6 Video Generation via OreateAI ─────────────────────────────────────
+# ─── Wan 2.6 Video Generation with Reference Images ─────────────────────────────
 
 def _oreate_generate_video_password() -> str:
     """Generate password for video account"""
@@ -760,8 +759,98 @@ def _oreate_generate_video_password() -> str:
         chars.append(random.choice("0123456789abcdef"))
     return "Aa" + "".join(chars) + "1"
 
-def run_wan26_generation(prompt: str, size: str) -> dict:
-    """Generate video using Wan 2.6 via OreateAI"""
+def _oreate_upload_video_reference_image(image_bytes: bytes, filename: str, ext: str, session_cookies: dict) -> dict:
+    """Upload reference image for video generation"""
+    clean_name = re.sub(r"\.[^.]+$", "", filename)
+    
+    # Step 1: Get upload token from OreateAI
+    token_res = requests.post(
+        f"{OREATE_BASE}/oreate/convert/getuploadbostoken",
+        headers={
+            "Content-Type": "application/json",
+            "Origin": OREATE_BASE,
+            "Referer": f"{OREATE_BASE}/home/chat/aiVideo",
+            "Cookie": "; ".join([f"{k}={v}" for k, v in session_cookies.items()]),
+            "User-Agent": _OREATE_UA,
+        },
+        json={
+            "mFileList": [{"filename": clean_name, "fileExt": ext, "size": len(image_bytes)}],
+            "source": "aiVideo",
+        },
+        timeout=30,
+    )
+    token_res.raise_for_status()
+    token_json = token_res.json()
+    
+    if token_json.get("status", {}).get("code") != 0:
+        raise RuntimeError(f"Upload token failed: {token_json.get('status', {}).get('msg')}")
+    
+    # Get key data
+    key_list = token_json.get("data", {}).get("KeyList", {})
+    key_data = key_list.get(f"{clean_name}.{ext}")
+    if not key_data and key_list:
+        key_data = list(key_list.values())[0]
+    if not key_data:
+        raise RuntimeError(f"No upload token key received. Available: {list(key_list.keys())}")
+    
+    bucket = key_data["bucket"]
+    object_path = key_data["objectPath"]
+    session_key = key_data["sessionkey"]
+    content_type = f"image/{'jpeg' if ext == 'jpg' else ext}"
+    
+    # Step 2: Initialize GCS resumable upload
+    gcs_init_url = (
+        f"https://storage.googleapis.com/upload/storage/v1/b/{bucket}/o"
+        f"?uploadType=resumable&name={requests.utils.quote(object_path, safe='')}"
+    )
+    
+    init_res = requests.post(
+        gcs_init_url,
+        headers={
+            "Authorization": f"Bearer {session_key}",
+            "Content-Type": "application/json",
+            "X-Upload-Content-Type": content_type,
+            "X-Upload-Content-Length": str(len(image_bytes)),
+            "Origin": OREATE_BASE,
+            "Referer": f"{OREATE_BASE}/",
+        },
+        timeout=30,
+    )
+    if not (200 <= init_res.status_code < 400):
+        raise RuntimeError(f"GCS init failed: {init_res.status_code}")
+    
+    upload_url = init_res.headers.get("location") or init_res.headers.get("Location")
+    if not upload_url:
+        raise RuntimeError("GCS did not return upload URL")
+    
+    # Step 3: Upload binary data to GCS
+    put_res = requests.put(
+        upload_url,
+        headers={
+            "Content-Type": content_type,
+            "Origin": OREATE_BASE,
+            "Referer": f"{OREATE_BASE}/",
+        },
+        data=image_bytes,
+        timeout=120,
+    )
+    if not put_res.ok:
+        raise RuntimeError(f"GCS upload failed: {put_res.status_code}")
+    
+    # Return attachment object for generation request
+    return {
+        "bos_url": object_path,
+        "doc_title": clean_name,
+        "doc_type": ext,
+        "size": len(image_bytes),
+        "bosUrl": object_path,
+        "flag": "upload",
+        "type": "file",
+        "status": 1,
+    }
+
+def run_wan26_generation(prompt: str, size: str, ref_images: list = None) -> dict:
+    """Generate video using Wan 2.6 with reference images support"""
     
     # Step 1: Get ticket and public key (for video)
     ticket_res = requests.get(
@@ -803,7 +892,7 @@ def run_wan26_generation(prompt: str, size: str) -> dict:
             "User-Agent": _OREATE_UA,
         },
         json={
-            "fr": "GGSEMVIDEO",  # Different from image (GGSEMIMAGE)
+            "fr": "GGSEMVIDEO",
             "email": email,
             "ticketID": ticket_id,
             "password": encrypted_password,
@@ -821,10 +910,18 @@ def run_wan26_generation(prompt: str, size: str) -> dict:
     session_cookies = signup_res.cookies.get_dict()
     session_cookies.update(cookies)
     
-    # Extract OUID if present
-    ouid = session_cookies.get('OUID', '')
+    # Step 4: Upload reference images (if any)
+    attachments = []
+    if ref_images:
+        for idx, (image_bytes, filename, file_ext) in enumerate(ref_images[:9]):
+            try:
+                att = _oreate_upload_video_reference_image(image_bytes, filename, file_ext, session_cookies)
+                attachments.append(att)
+                print(f"Uploaded reference image {idx+1} for video: {att['bos_url']}")
+            except Exception as e:
+                print(f"Ref {idx+1} upload FAILED: {e}")
     
-    # Step 4: Create video chat session
+    # Step 5: Create video chat session
     chat_res = requests.post(
         f"{OREATE_BASE}/oreate/create/chat",
         headers={
@@ -836,7 +933,7 @@ def run_wan26_generation(prompt: str, size: str) -> dict:
             "User-Agent": _OREATE_UA,
             "Cookie": "; ".join([f"{k}={v}" for k, v in session_cookies.items()]),
         },
-        json={"type": "aiVideo", "docId": ""},  # Different from image (aiImage)
+        json={"type": "aiVideo", "docId": ""},
         timeout=30,
     )
     chat_res.raise_for_status()
@@ -845,7 +942,7 @@ def run_wan26_generation(prompt: str, size: str) -> dict:
     if not chat_id:
         raise RuntimeError(f"Wan 2.6: no chatId in response")
     
-    # Step 5: Generate video via SSE stream
+    # Step 6: Generate video via SSE stream
     jt_token = "31$eyJrIj4iOCI0Iix5IkciQEdIRExETEtPSEpOUiJJIkFqIjwiNTw9OUE5QT08Pz5CQSI+IjYzIlEiSlFSTlZOVTk5ODY1OiIzIit5IkYiQD9AIj4iOCJQIklHS09KUExQIi0ibSI/Il1Yem52dVYxXTV2M0t2R1grXGZBQDNqTjx6bk5vVDxyclRyY18pPC8tdGpGRkNhWHloM2l0NGNlZDNCd2dIdl1vKXRZQ0VeRWY2L0lcN3pOKTpEUkAtNFA8S0xnRFg1XjY9eTBcWFVxX2dEeHhNbUFqTWNMZU9mV1VRVnFIeXhRYHNyTlQzVUVnSDFsRWxbWlxuaEo7OzlpcExQSXNqVzY8cj49PVAqcmEwQV1JblxgPjVjbFFSLEE2TGV0cGdmR1gzTz8tWXZkUlpKZSlEWUE6WltrajpDQGVQMzZyM3A5bHNdYzxSY29USUlrWmNlb2MwTl5KLk5zVUR4NURnPjc6W3o1TFk/djFyR2o1V3hceilvNy9nUms0c2NRZjQ5djcwOipgL09YWXVFdEtnNDMtNylvT3Zzblc0dnBQV0d4T088Xm5xVFJIaTdcS2BrbkpQW11wLmlfb1VyUTMzbk42XixTQXFiU3k/LF9EW2BgeGwyYTMtbmYzOTVtR290LjxBMC09cWdCW1FJVHhkLT03ODpCZC8xQ2dWTDc1SyxOMi4seEA7UlQxKUlPfCk1X2BjO3MubVBScWJbODh4VWl1L0oscHRdclJXQV90Zmg1WWBJL2tVLjtcfDIyfGZnOmg9QUFDQ3BEQXN3SERNdkd5TXpPU1MuUFUzYzQ5In0="
     
     request_body = {
@@ -863,7 +960,7 @@ def run_wan26_generation(prompt: str, size: str) -> dict:
         },
         "clientType": "pc",
         "type": "chat",
-        "chatType": "aiVideo",  # Different from image
+        "chatType": "aiVideo",
         "chatTitle": "Unnamed Session",
         "focusId": chat_id,
         "chatId": chat_id,
@@ -871,7 +968,7 @@ def run_wan26_generation(prompt: str, size: str) -> dict:
         "messages": [{
             "role": "user",
             "content": prompt,
-            "attachments": [],
+            "attachments": attachments,  # Include reference images
         }],
         "isFirst": True,
     }
@@ -889,7 +986,7 @@ def run_wan26_generation(prompt: str, size: str) -> dict:
         },
         json=request_body,
         stream=True,
-        timeout=300,  # Longer timeout for video generation
+        timeout=180,  # 3 minutes timeout for video generation
     )
     sse_res.raise_for_status()
     
@@ -920,6 +1017,11 @@ def run_wan26_generation(prompt: str, size: str) -> dict:
                     if data.get("videoUrl"):
                         video_url = data["videoUrl"]
                         break
+                    if data.get("url"):
+                        url = data["url"]
+                        if url and any(url.endswith(ext) for ext in ['.mp4', '.mov', '.avi', '.webm', '.mkv']):
+                            video_url = url
+                            break
                 except (_json.JSONDecodeError, KeyError):
                     pass
         
@@ -1152,7 +1254,7 @@ def run_generation(prompt: str, size: str, model: str, ref_images: list = None) 
     if model == "seedance_2":
         return run_seedance2_generation(prompt)
     if model == "wan_2_6":
-        return run_wan26_generation(prompt, size)
+        return run_wan26_generation(prompt, size, ref_images or [])
     return run_synthesia_generation(prompt, size, model)
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -1183,9 +1285,10 @@ NB2_PROGRESS_STAGES = [
 WAN26_PROGRESS_STAGES = [
     {"threshold": 0,   "label": "Initializing",       "emoji": "⚙️"},
     {"threshold": 5,   "label": "Creating account",   "emoji": "📧"},
-    {"threshold": 10,  "label": "Generating video",   "emoji": "🎨"},
-    {"threshold": 180, "label": "Rendering",          "emoji": "🎬"},
-    {"threshold": 300, "label": "Finalizing",         "emoji": "✨"},
+    {"threshold": 10,  "label": "Uploading images",   "emoji": "📤"},
+    {"threshold": 20,  "label": "Generating video",   "emoji": "🎨"},
+    {"threshold": 90,  "label": "Rendering",          "emoji": "🎬"},
+    {"threshold": 105, "label": "Finalizing",         "emoji": "✨"},
 ]
 
 SEEDANCE2_PROGRESS_STAGES = [
@@ -1214,7 +1317,7 @@ def build_progress_embed(prompt, size_label, elapsed, model_label, model_value="
         estimated_total = 840
     elif model_value == "wan_2_6":
         stages = WAN26_PROGRESS_STAGES
-        estimated_total = 360
+        estimated_total = 120  # 2 minutes max
     else:
         stages = PROGRESS_STAGES
         estimated_total = 180
@@ -1319,7 +1422,7 @@ async def on_ready():
     prompt="What the media should show",
     model="AI model to use (default: Nano Banana Pro)",
     size="Video resolution",
-    ref1="Reference image 1 (Nano Banana 2 only)",
+    ref1="Reference image 1 (Nano Banana 2 / Wan 2.6 only)",
     ref2="Reference image 2",
     ref3="Reference image 3",
     ref4="Reference image 4",
@@ -1353,7 +1456,10 @@ async def generate(
     if model_value == "nanobanana_2":
         size_value = raw_size or "ai_decide"
         size_label = "AI decided"
-    elif model_value == "seedance_2" or model_value == "wan_2_6":
+    elif model_value == "seedance_2":
+        size_value = "1280x720"
+        size_label = "16:9"
+    elif model_value == "wan_2_6":
         size_value = "1280x720"
         size_label = "16:9"
     elif raw_size == "ai_decide" or raw_size is None:
@@ -1369,7 +1475,8 @@ async def generate(
     actual_prompt = prompt
 
     ref_images = []
-    if model_value == "nanobanana_2":
+    # Allow reference images for Nano Banana 2 AND Wan 2.6
+    if model_value in ["nanobanana_2", "wan_2_6"]:
         raw_refs = [ref1, ref2, ref3, ref4, ref5, ref6, ref7, ref8, ref9]
         bad_refs = []
         for attachment in raw_refs:
@@ -1400,7 +1507,7 @@ async def generate(
     else:
         if any(r is not None for r in [ref1, ref2, ref3, ref4, ref5, ref6, ref7, ref8, ref9]):
             await interaction.response.send_message(
-                "⚠️ Reference images only work with **Nano Banana 2**.",
+                "⚠️ Reference images only work with **Nano Banana 2** or **Wan 2.6**.",
                 ephemeral=True,
             )
             return
@@ -1568,7 +1675,7 @@ async def models_cmd(interaction: discord.Interaction):
             "`Veo 3.1` — Google Veo 3.1\n"
             "`Veo 3.1 Fast` — Google Veo 3.1 (faster)\n"
             "`Seedance 2` — Seedance v2\n"
-            "`Wan 2.6` — Wan 2.6 video generation"
+            "`Wan 2.6` — Wan 2.6 video generation with reference images"
         ),
         inline=False,
     )
