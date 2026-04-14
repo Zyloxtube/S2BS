@@ -399,7 +399,7 @@ def run_synthesia_generation(prompt: str, size: str, model: str) -> dict:
         "download_url": result.get("downloadUrl", ""),
     }
 
-# ─── OreateAI image generation ───────────────────────────────────────────────
+# ─── OreateAI image generation (Nano Banana 2) with correct upload method ───
 
 _OREATE_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 
@@ -408,7 +408,7 @@ def _oreate_generate_email() -> str:
     return "".join(random.choices(chars, k=14)) + "@gmail.com"
 
 def _oreate_generate_password() -> str:
-    return "Aa" + "".join(random.choices("0123456789abcdef", k=8)) + "1"
+    return "Aa" + "".join(random.choices("0123456789abcdef", k=8)) + "1!"
 
 def _oreate_encrypt_password(plain_text: str, public_key_pem: str) -> str:
     clean_pem = public_key_pem.strip()
@@ -426,97 +426,52 @@ def _oreate_encrypt_password(plain_text: str, public_key_pem: str) -> str:
     cipher = PKCS1_v1_5.new(key)
     return _base64.b64encode(cipher.encrypt(plain_text.encode())).decode()
 
-def _oreate_create_session() -> tuple:
-    sess = requests.Session()
-    sess.headers.update({
-        "User-Agent": _OREATE_UA,
-        "Accept": "application/json, text/plain, */*",
-        "Accept-Language": "en-US,en;q=0.9",
-        "Locale": "en-US",
-        "Client-Type": "pc",
-    })
-
-    ticket_res = sess.get(
-        f"{OREATE_BASE}/passport/api/getticket",
-        headers={"Referer": f"{OREATE_BASE}/home/vertical/aiImage"},
-        timeout=30,
-    )
-    ticket_res.raise_for_status()
-    ticket_data = ticket_res.json()
-
-    ticket_id = ticket_data["data"]["ticketID"]
-    public_key = ticket_data["data"]["pk"]
-
-    email = _oreate_generate_email()
-    password = _oreate_generate_password()
-    encrypted_password = _oreate_encrypt_password(password, public_key)
-
-    signup_res = sess.post(
-        f"{OREATE_BASE}/passport/api/emailsignupin",
-        headers={
-            "Content-Type": "application/json",
-            "Origin": OREATE_BASE,
-            "Referer": f"{OREATE_BASE}/home/vertical/aiImage",
-        },
-        json={
-            "fr": "GGSEMIMAGE",
-            "email": email,
-            "ticketID": ticket_id,
-            "password": encrypted_password,
-            "jt": "",
-            "source": "aiImage",
-        },
-        timeout=30,
-    )
-    signup_res.raise_for_status()
-    signup_data = signup_res.json()
-
-    if signup_data.get("status", {}).get("code") != 0:
-        raise RuntimeError(f"OreateAI signup failed: {signup_data.get('status', {}).get('msg')}")
-
-    sess.headers.update({
-        "Origin": OREATE_BASE,
-        "Referer": f"{OREATE_BASE}/home/chat/aiImage",
-    })
-    return sess, email, password
-
-def _oreate_upload_image(sess: requests.Session, image_bytes: bytes, filename: str, ext: str) -> dict:
+def _oreate_upload_image_to_gcs(image_bytes: bytes, filename: str, ext: str, session_cookies: dict) -> dict:
+    """Upload image to GCS using the correct method from oreate_upload.ts"""
     clean_name = re.sub(r"\.[^.]+$", "", filename)
-
-    token_res = sess.post(
+    
+    # Step 1: Get upload token from OreateAI
+    token_res = requests.post(
         f"{OREATE_BASE}/oreate/convert/getuploadbostoken",
         headers={
             "Content-Type": "application/json",
             "Origin": OREATE_BASE,
             "Referer": f"{OREATE_BASE}/home/chat/aiImage",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+            "Cookie": "; ".join([f"{k}={v}" for k, v in session_cookies.items()]),
+            "User-Agent": _OREATE_UA,
         },
         json={
             "mFileList": [{"filename": clean_name, "fileExt": ext, "size": len(image_bytes)}],
+            "source": "aiImage",
         },
         timeout=30,
     )
     token_res.raise_for_status()
     token_json = token_res.json()
-
+    
     if token_json.get("status", {}).get("code") != 0:
         raise RuntimeError(f"Upload token failed: {token_json.get('status', {}).get('msg')}")
-
+    
+    # Get key data
     key_list = token_json.get("data", {}).get("KeyList", {})
-    key_data = key_list.get(f"{clean_name}.{ext}") or (list(key_list.values())[0] if key_list else None)
+    key_data = key_list.get(f"{clean_name}.{ext}")
+    if not key_data and key_list:
+        # Try to get first available key
+        key_data = list(key_list.values())[0]
     if not key_data:
-        raise RuntimeError(f"No upload token key received")
-
+        raise RuntimeError(f"No upload token key received. Available: {list(key_list.keys())}")
+    
     bucket = key_data["bucket"]
     object_path = key_data["objectPath"]
     session_key = key_data["sessionkey"]
     content_type = f"image/{'jpeg' if ext == 'jpg' else ext}"
-
+    
+    # Step 2: Initialize GCS resumable upload
     gcs_init_url = (
         f"https://storage.googleapis.com/upload/storage/v1/b/{bucket}/o"
         f"?uploadType=resumable&name={requests.utils.quote(object_path, safe='')}"
     )
-
+    
     init_res = requests.post(
         gcs_init_url,
         headers={
@@ -529,13 +484,14 @@ def _oreate_upload_image(sess: requests.Session, image_bytes: bytes, filename: s
         },
         timeout=30,
     )
-    if not (init_res.ok or 200 <= init_res.status_code < 400):
-        raise RuntimeError(f"GCS init failed")
-
+    if not (200 <= init_res.status_code < 400):
+        raise RuntimeError(f"GCS init failed: {init_res.status_code}")
+    
     upload_url = init_res.headers.get("location") or init_res.headers.get("Location")
     if not upload_url:
         raise RuntimeError("GCS did not return upload URL")
-
+    
+    # Step 3: Upload binary data to GCS
     put_res = requests.put(
         upload_url,
         headers={
@@ -547,8 +503,9 @@ def _oreate_upload_image(sess: requests.Session, image_bytes: bytes, filename: s
         timeout=120,
     )
     if not put_res.ok:
-        raise RuntimeError(f"GCS upload PUT failed")
-
+        raise RuntimeError(f"GCS upload failed: {put_res.status_code}")
+    
+    # Return attachment object for generation request
     return {
         "bos_url": object_path,
         "doc_title": clean_name,
@@ -560,36 +517,120 @@ def _oreate_upload_image(sess: requests.Session, image_bytes: bytes, filename: s
         "status": 1,
     }
 
-def _oreate_extract_image_url(text: str):
-    if not text:
+def _oreate_extract_image_url_from_stream(response_text: str) -> str:
+    """Extract image URL from SSE stream response"""
+    if not response_text:
         return None
-    m = re.search(r"\((https?://[^\s)]+)\)", text)
-    if m:
-        return m.group(1)
-    m = re.search(r"(https?://[^\s\"'<>]+\.(jpg|jpeg|png|gif|webp|bmp|svg)(\?[^\s\"'<>]*)?)", text, re.IGNORECASE)
-    if m:
-        return m.group(1)
-    m = re.search(r"(https?://[^\s\"'<>]+)", text)
+    
+    # Look for imgUrl or url in data events
+    lines = response_text.split('\n')
+    for line in lines:
+        if line.startswith('data: '):
+            try:
+                data = _json.loads(line[6:])
+                if data.get('data', {}).get('imgUrl'):
+                    return data['data']['imgUrl']
+                if data.get('data', {}).get('url'):
+                    return data['data']['url']
+                if data.get('imgUrl'):
+                    return data['imgUrl']
+                if data.get('url'):
+                    return data['url']
+            except (_json.JSONDecodeError, KeyError):
+                pass
+    
+    # Fallback: find URL in text
+    m = re.search(r"(https?://[^\s\"'<>]+\.(jpg|jpeg|png|gif|webp|bmp)(\?[^\s\"'<>]*)?)", response_text, re.IGNORECASE)
     if m:
         return m.group(1)
     return None
 
 def run_oreate_generation(prompt: str, size: str, ref_images: list) -> dict:
-    final_prompt = prompt
-
-    sess, email, password = _oreate_create_session()
-
+    """Generate image using Nano Banana 2 with correct upload method"""
+    
+    # Step 1: Get ticket and public key
+    ticket_res = requests.get(
+        f"{OREATE_BASE}/passport/api/getticket",
+        headers={
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Client-Type": "pc",
+            "Locale": "en-US",
+            "Referer": f"{OREATE_BASE}/home/vertical/aiImage",
+            "User-Agent": _OREATE_UA,
+        },
+        timeout=30,
+    )
+    ticket_res.raise_for_status()
+    ticket_data = ticket_res.json()
+    
+    ticket_id = ticket_data["data"]["ticketID"]
+    public_key = ticket_data["data"]["pk"]
+    
+    # Extract cookies from ticket response
+    cookies = ticket_res.cookies.get_dict()
+    
+    # Step 2: Generate account credentials
+    email = _oreate_generate_email()
+    password = _oreate_generate_password()
+    encrypted_password = _oreate_encrypt_password(password, public_key)
+    
+    # Step 3: Create account
+    signup_res = requests.post(
+        f"{OREATE_BASE}/passport/api/emailsignupin",
+        headers={
+            "Accept": "application/json, text/plain, */*",
+            "Content-Type": "application/json",
+            "Cookie": "; ".join([f"{k}={v}" for k, v in cookies.items()]),
+            "Locale": "en-US",
+            "Origin": OREATE_BASE,
+            "Referer": f"{OREATE_BASE}/home/vertical/aiImage",
+            "User-Agent": _OREATE_UA,
+        },
+        json={
+            "fr": "GGSEMIMAGE",
+            "email": email,
+            "ticketID": ticket_id,
+            "password": encrypted_password,
+            "jt": "",
+        },
+        timeout=30,
+    )
+    signup_res.raise_for_status()
+    signup_data = signup_res.json()
+    
+    if signup_data.get("status", {}).get("code") != 0:
+        raise RuntimeError(f"OreateAI signup failed: {signup_data.get('status', {}).get('msg')}")
+    
+    # Update cookies with session cookies
+    session_cookies = signup_res.cookies.get_dict()
+    session_cookies.update(cookies)
+    
+    # Extract OUID if present
+    ouid = session_cookies.get('OUID', '')
+    
+    # Step 4: Upload reference images
     attachments = []
     for idx, (image_bytes, filename, file_ext) in enumerate(ref_images[:9]):
         try:
-            att = _oreate_upload_image(sess, image_bytes, filename, file_ext)
+            att = _oreate_upload_image_to_gcs(image_bytes, filename, file_ext, session_cookies)
             attachments.append(att)
+            print(f"Uploaded reference image {idx+1}: {att['bos_url']}")
         except Exception as e:
             print(f"Ref {idx+1} upload FAILED: {e}")
-
-    chat_res = sess.post(
+    
+    # Step 5: Create chat session
+    chat_res = requests.post(
         f"{OREATE_BASE}/oreate/create/chat",
-        headers={"Content-Type": "application/json"},
+        headers={
+            "Accept": "application/json, text/plain, */*",
+            "Content-Type": "application/json",
+            "Locale": "en-US",
+            "Origin": OREATE_BASE,
+            "Referer": f"{OREATE_BASE}/home/chat/aiImage",
+            "User-Agent": _OREATE_UA,
+            "Cookie": "; ".join([f"{k}={v}" for k, v in session_cookies.items()]),
+        },
         json={"type": "aiImage", "docId": ""},
         timeout=30,
     )
@@ -598,76 +639,96 @@ def run_oreate_generation(prompt: str, size: str, ref_images: list) -> dict:
     chat_id = chat_data.get("data", {}).get("chatId")
     if not chat_id:
         raise RuntimeError(f"OreateAI: no chatId in response")
-
-    sse_res = sess.post(
-        f"{OREATE_BASE}/oreate/sse/stream",
-        headers={"Content-Type": "application/json", "Accept": "text/event-stream"},
-        json={
-            "clientType": "pc",
-            "type": "chat",
-            "chatType": "aiImage",
-            "chatId": chat_id,
-            "focusId": chat_id,
-            "from": "home",
-            "isFirst": True,
-            "messages": [{"role": "user", "content": final_prompt, "attachments": attachments}],
+    
+    # Step 6: Generate image via SSE stream
+    # Generate JT token (simplified version)
+    jt_token = "31$eyJrIj4iOCI0Iix5IkciQEdIRExETEtPSEpOUiJJIkFqIjwiNTw9OUE5QT08Pz5CQSI+IjYzIlEiSlFSTlZOVTk5ODY1OiIzIit5IkYiQD9AIj4iOCJQIklHS09KUExQIi0ibSI/Il1Yem52dVYxXTV2M0t2R1grXGZBQDNqTjx6bk5vVDxyclRyY18pPC8tdGpGRkNhWHloM2l0NGNlZDNCd2dIdl1vKXRZQ0VeRWY2L0lcN3pOKTpEUkAtNFA8S0xnRFg1XjY9eTBcWFVxX2dEeHhNbUFqTWNMZU9mV1VRVnFIeXhRYHNyTlQzVUVnSDFsRWxbWlxuaEo7OzlpcExQSXNqVzY8cj49PVAqcmEwQV1JblxgPjVjbFFSLEE2TGV0cGdmR1gzTz8tWXZkUlpKZSlEWUE6WltrajpDQGVQMzZyM3A5bHNdYzxSY29USUlrWmNlb2MwTl5KLk5zVUR4NURnPjc6W3o1TFk/djFyR2o1V3hceilvNy9nUms0c2NRZjQ5djcwOipgL09YWXVFdEtnNDMtNylvT3Zzblc0dnBQV0d4T088Xm5xVFJIaTdcS2BrbkpQW11wLmlfb1VyUTMzbk42XixTQXFiU3k/LF9EW2BgeGwyYTMtbmYzOTVtR290LjxBMC09cWdCW1FJVHhkLT03ODpCZC8xQ2dWTDc1SyxOMi4seEA7UlQxKUlPfCk1X2BjO3MubVBScWJbODh4VWl1L0oscHRdclJXQV90Zmg1WWBJL2tVLjtcfDIyfGZnOmg9QUFDQ3BEQXN3SERNdkd5TXpPU1MuUFUzYzQ5In0="
+    
+    request_body = {
+        "jt": jt_token,
+        "ua": _OREATE_UA,
+        "js_env": "h5",
+        "extra": {
+            "email": email,
+            "vip": "0",
+            "reg_ts": int(time.time()),
+            "deviceID": "EB78F52161CDCA4F55EF242566DAC05E:FG=1",
+            "bid": "19caf744b12438441a8a1c",
+            "doc_name": "",
+            "module_name": "gpt4o",
         },
+        "clientType": "wap",
+        "type": "chat",
+        "chatType": "aiImage",
+        "chatTitle": "Unnamed Session",
+        "focusId": chat_id,
+        "chatId": chat_id,
+        "from": "home",
+        "messages": [{
+            "role": "user",
+            "content": prompt,
+            "attachments": attachments,
+        }],
+        "isFirst": True,
+    }
+    
+    sse_res = requests.post(
+        f"{OREATE_BASE}/oreate/sse/stream",
+        headers={
+            "Accept": "text/event-stream",
+            "Content-Type": "application/json",
+            "Locale": "en-US",
+            "Origin": OREATE_BASE,
+            "Referer": f"{OREATE_BASE}/home/chat/aiImage",
+            "User-Agent": _OREATE_UA,
+            "Cookie": "; ".join([f"{k}={v}" for k, v in session_cookies.items()]),
+        },
+        json=request_body,
         stream=True,
         timeout=180,
     )
     sse_res.raise_for_status()
-
+    
+    # Parse SSE stream
     image_url = None
-    buf = ""
     full_response = ""
-
+    
     for chunk in sse_res.iter_content(chunk_size=None, decode_unicode=True):
         if not chunk:
             continue
-        buf += chunk
         full_response += chunk
-        lines = buf.split("\n")
-        buf = lines[-1]
-
-        for line in lines[:-1]:
-            if not line.startswith("data:"):
-                continue
-            json_str = line[5:].strip()
-            if not json_str:
-                continue
-
-            extracted = _oreate_extract_image_url(json_str)
-            if extracted and "." in extracted.split("/")[-1]:
-                image_url = extracted
-                break
-
-            try:
-                data = _json.loads(json_str)
-                result_text = data.get("data", {}).get("result", "")
-                if result_text:
-                    extracted = _oreate_extract_image_url(result_text)
-                    if extracted:
-                        image_url = extracted
+        
+        # Try to extract image URL from each chunk
+        extracted = _oreate_extract_image_url_from_stream(chunk)
+        if extracted:
+            image_url = extracted
+            break
+        
+        # Parse JSON from data lines
+        lines = chunk.split("\n")
+        for line in lines:
+            if line.startswith("data: "):
+                try:
+                    data = _json.loads(line[6:])
+                    if data.get("data", {}).get("imgUrl"):
+                        image_url = data["data"]["imgUrl"]
                         break
-                for key in ("imageUrl", "url", "image_url"):
-                    val = data.get("data", {}).get(key)
-                    if val and val.startswith("http"):
-                        image_url = val
+                    if data.get("data", {}).get("url"):
+                        image_url = data["data"]["url"]
                         break
-                if image_url:
-                    break
-            except (_json.JSONDecodeError, KeyError, TypeError):
-                pass
-
+                except (_json.JSONDecodeError, KeyError):
+                    pass
+        
         if image_url:
             break
-
+    
+    # Final fallback extraction
     if not image_url:
-        image_url = _oreate_extract_image_url(full_response)
-
+        image_url = _oreate_extract_image_url_from_stream(full_response)
+    
     if not image_url:
         raise RuntimeError("OreateAI: no image URL found in response")
-
+    
     return {
         "url": image_url,
         "download_url": image_url,
@@ -1255,7 +1316,7 @@ async def models_cmd(interaction: discord.Interaction):
     embed.add_field(
         name="Image models",
         value=(
-            "`Nano Banana Pro` — fast AI image generation\n"
+            "`Nano Banana Pro` — maximum nano banana 2 quality \n"
             "`Nano Banana 2` — image generation with up to 9 reference images"
         ),
         inline=False,
