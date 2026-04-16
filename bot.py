@@ -43,18 +43,6 @@ download_session.verify = False
 SUPABASE_URL = "https://liuvfhbmbtunebdwhiqh.supabase.co"
 API_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxpdXZmaGJtYnR1bmViZHdoaXFoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ2MTY0MTYsImV4cCI6MjA5MDE5MjQxNn0.R8Ybduar3YilzBwbK3V8bgNSUQO66VDQmDgmNNjeVsI"
 
-LUNO_HEADERS = {
-    "accept": "*/*",
-    "accept-language": "en-US,en;q=0.9",
-    "apikey": API_KEY,
-    "content-type": "application/json;charset=UTF-8",
-    "origin": "https://www.lunostudio.ai",
-    "referer": "https://www.lunostudio.ai/",
-    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-    "x-client-info": "supabase-ssr/0.9.0 createBrowserClient",
-    "x-supabase-api-version": "2024-01-01"
-}
-
 # ============================================================
 # DISCORD CONFIGURATION
 # ============================================================
@@ -97,7 +85,7 @@ def keep_alive():
     t.start()
 
 # ============================================================
-# LUNO STUDIO HELPER FUNCTIONS (Nano Banana Pro - EXACT MATCH)
+# LUNO STUDIO HELPER FUNCTIONS (Nano Banana Pro)
 # ============================================================
 
 def generate_code_challenge():
@@ -161,12 +149,24 @@ def signup(email, password, code_challenge):
         "code_challenge_method": "s256"
     }
     
+    headers = {
+        "accept": "*/*",
+        "accept-language": "en-US,en;q=0.9",
+        "apikey": API_KEY,
+        "content-type": "application/json;charset=UTF-8",
+        "origin": "https://www.lunostudio.ai",
+        "referer": "https://www.lunostudio.ai/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "x-client-info": "supabase-ssr/0.9.0 createBrowserClient",
+        "x-supabase-api-version": "2024-01-01"
+    }
+    
     print(f"\n[*] Sending signup request...")
-    response = requests.post(url, headers=LUNO_HEADERS, json=payload, timeout=30)
+    response = requests.post(url, headers=headers, json=payload, timeout=30)
     print(f"[*] Signup response: {response.status_code}")
     
     if response.status_code != 200:
-        print(f"[!] Error: {response.text}")
+        print(f"[!] Error: {response.text[:200]}")
         return None
     
     return response.json()
@@ -180,12 +180,24 @@ def verify_email(email, verification_code):
         "gotrue_meta_security": {}
     }
     
+    headers = {
+        "accept": "*/*",
+        "accept-language": "en-US,en;q=0.9",
+        "apikey": API_KEY,
+        "content-type": "application/json;charset=UTF-8",
+        "origin": "https://www.lunostudio.ai",
+        "referer": "https://www.lunostudio.ai/",
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "x-client-info": "supabase-ssr/0.9.0 createBrowserClient",
+        "x-supabase-api-version": "2024-01-01"
+    }
+    
     print(f"\n[*] Verifying with code: {verification_code}")
-    response = requests.post(url, headers=LUNO_HEADERS, json=payload, timeout=30)
+    response = requests.post(url, headers=headers, json=payload, timeout=30)
     print(f"[*] Verify response: {response.status_code}")
     
     if response.status_code != 200:
-        print(f"[!] Error: {response.text}")
+        print(f"[!] Error: {response.text[:200]}")
         return None
     
     return response.json()
@@ -206,7 +218,7 @@ def create_cookie_value(verify_result):
     return f"base64-{base64_encoded}"
 
 def create_project(cookie_value, project_id, timestamp):
-    """Create a new project with the cookie - EXACT match to working code"""
+    """Create a new project with the cookie"""
     url = "https://www.lunostudio.ai/api/projects"
     
     headers = {
@@ -216,7 +228,13 @@ def create_project(cookie_value, project_id, timestamp):
         "cookie": f"geo-country=US; sb-liuvfhbmbtunebdwhiqh-auth-token={cookie_value}",
         "origin": "https://www.lunostudio.ai",
         "referer": "https://www.lunostudio.ai/dashboard",
-        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "sec-ch-ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Windows"',
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-origin"
     }
     
     payload = {
@@ -233,11 +251,11 @@ def create_project(cookie_value, project_id, timestamp):
         print(f"[+] Project created successfully!")
         return response.json()
     else:
-        print(f"[!] Failed: {response.text}")
+        print(f"[!] Failed: {response.text[:200]}")
         return None
 
 def generate_image(cookie_value, project_id, prompt, ref_images):
-    """Generate AI image with the cookie - EXACT match to working code"""
+    """Generate AI image with the cookie"""
     url = "https://www.lunostudio.ai/api/generate"
     
     headers = {
@@ -247,13 +265,21 @@ def generate_image(cookie_value, project_id, prompt, ref_images):
         "cookie": f"geo-country=US; sb-liuvfhbmbtunebdwhiqh-auth-token={cookie_value}",
         "origin": "https://www.lunostudio.ai",
         "referer": f"https://www.lunostudio.ai/project/{project_id}",
-        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "sec-ch-ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Windows"',
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-origin",
+        "priority": "u=1, i",
+        "pragma": "no-cache",
+        "cache-control": "no-cache"
     }
     
     # Convert reference images to data URLs
     image_inputs = []
     for img_bytes, filename, ext in ref_images:
-        import base64
         mime_type = f"image/{'jpeg' if ext == 'jpg' else ext}"
         img_base64 = base64.b64encode(img_bytes).decode()
         data_url = f"data:{mime_type};base64,{img_base64}"
@@ -274,17 +300,22 @@ def generate_image(cookie_value, project_id, prompt, ref_images):
     
     print(f"\n[*] Generating image with prompt: {prompt}")
     print(f"[*] Reference images: {len(image_inputs)}")
-    response = requests.post(url, headers=headers, json=payload, timeout=180)
-    print(f"[*] Generate response: {response.status_code}")
     
-    if response.status_code == 200:
-        return response.json()
-    else:
-        print(f"[!] Failed: {response.text}")
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=180)
+        print(f"[*] Generate response: {response.status_code}")
+        
+        if response.status_code == 200:
+            return response.json()
+        else:
+            print(f"[!] Failed: {response.text[:500]}")
+            return None
+    except Exception as e:
+        print(f"[!] Exception: {e}")
         return None
 
 def run_luno_generation(prompt: str, size: str, ref_images: list = None) -> dict:
-    """Generate image using Luno Studio - EXACT match to working code flow"""
+    """Generate image using Luno Studio (Nano Banana Pro)"""
     
     # Step 1: Generate temporary email
     emailnator, email = get_temp_email()
@@ -298,8 +329,6 @@ def run_luno_generation(prompt: str, size: str, ref_images: list = None) -> dict
     if not signup_result or 'id' not in signup_result:
         raise RuntimeError("Signup failed")
     
-    user_id = signup_result['id']
-    
     # Step 3: Get verification code
     verification_code = wait_for_verification_code(emailnator, email)
     
@@ -309,10 +338,8 @@ def run_luno_generation(prompt: str, size: str, ref_images: list = None) -> dict
     if not verify_result or 'access_token' not in verify_result:
         raise RuntimeError("Verification failed")
     
-    # Step 5: Create cookie value
+    # Step 5: Create cookie and project
     cookie_value = create_cookie_value(verify_result)
-    
-    # Step 6: Create project
     timestamp = int(time.time() * 1000)
     project_id = f"proj-{timestamp}-{secrets.token_urlsafe(5).replace('-', '')}"
     
@@ -321,7 +348,7 @@ def run_luno_generation(prompt: str, size: str, ref_images: list = None) -> dict
     if not project_result:
         raise RuntimeError("Project creation failed")
     
-    # Step 7: Generate image
+    # Step 6: Generate image
     generation_result = generate_image(cookie_value, project_id, prompt, ref_images or [])
     
     if generation_result and 'output' in generation_result and len(generation_result['output']) > 0:
@@ -681,10 +708,6 @@ def _oreate_generate_password() -> str:
     return "Aa" + "".join(random.choices("0123456789abcdef", k=8)) + "1!"
 
 def _oreate_encrypt_password(plain_text: str, public_key_pem: str) -> str:
-    from Crypto.PublicKey import RSA
-    from Crypto.Cipher import PKCS1_v1_5
-    import base64 as _base64
-    
     clean_pem = public_key_pem.strip()
     if "BEGIN RSA PUBLIC KEY" in clean_pem:
         b64 = (
@@ -693,12 +716,12 @@ def _oreate_encrypt_password(plain_text: str, public_key_pem: str) -> str:
             .replace("-----END RSA PUBLIC KEY-----", "")
             .replace("\n", "").replace("\r", "").strip()
         )
-        key = RSA.import_key(_base64.b64decode(b64))
+        key = RSA.import_key(base64.b64decode(b64))
     else:
         key = RSA.import_key(clean_pem)
 
     cipher = PKCS1_v1_5.new(key)
-    return _base64.b64encode(cipher.encrypt(plain_text.encode())).decode()
+    return base64.b64encode(cipher.encrypt(plain_text.encode())).decode()
 
 def _oreate_upload_image_to_gcs(image_bytes: bytes, filename: str, ext: str, session_cookies: dict) -> dict:
     clean_name = re.sub(r"\.[^.]+$", "", filename)
@@ -1727,7 +1750,6 @@ async def generate(
         size_label = SIZE_LABELS.get(size_value, size_value)
 
     ref_images = []
-    # Allow reference images for Nano Banana Pro, Nano Banana 2, and Wan 2.6
     if model_value in ["nanobanana_pro", "nanobanana_2", "wan_2_6"]:
         raw_refs = [ref1, ref2, ref3, ref4, ref5, ref6, ref7, ref8, ref9]
         bad_refs = []
