@@ -22,6 +22,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.poolmanager import PoolManager
 import secrets
 import hashlib
+import base64
 from datetime import datetime
 from emailnator import Emailnator
 
