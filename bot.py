@@ -236,10 +236,9 @@ def create_luno_project(cookie_value, project_id, timestamp):
         print(f"[!] Failed: {response.text}")
         return None
 
-def upload_image_to_cdn(image_bytes: bytes, filename: str) -> str:
-    """Upload image to a temporary CDN and return URL (using imgbb or similar)"""
-    # For now, we'll use a data URL as fallback
-    # In production, you'd upload to a CDN like imgbb, cloudinary, etc.
+def upload_image_to_temp_url(image_bytes: bytes, filename: str) -> str:
+    """Upload image to a temporary CDN or use data URL"""
+    # For Luno Studio, we can use data URLs directly
     import base64
     ext = filename.split('.')[-1].lower()
     mime_type = f"image/{'jpeg' if ext == 'jpg' else ext}"
@@ -247,7 +246,7 @@ def upload_image_to_cdn(image_bytes: bytes, filename: str) -> str:
     data_url = f"data:{mime_type};base64,{img_base64}"
     return data_url
 
-def generate_luno_image(cookie_value, project_id, prompt, ref_images):
+def generate_luno_image(cookie_value, project_id, prompt, ref_images, retry_count=0):
     """Generate AI image with Luno Studio using reference images"""
     url = "https://www.lunostudio.ai/api/generate"
     
@@ -261,11 +260,10 @@ def generate_luno_image(cookie_value, project_id, prompt, ref_images):
         "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
     }
     
-    # Convert reference images to URLs (data URLs or CDN URLs)
+    # Convert reference images to data URLs
     image_inputs = []
     for img_bytes, filename, ext in ref_images:
-        # Upload to CDN or use data URL
-        img_url = upload_image_to_cdn(img_bytes, filename)
+        img_url = upload_image_to_temp_url(img_bytes, filename)
         image_inputs.append(img_url)
     
     payload = {
@@ -283,13 +281,49 @@ def generate_luno_image(cookie_value, project_id, prompt, ref_images):
     
     print(f"\n[*] Generating image with prompt: {prompt}")
     print(f"[*] Reference images: {len(image_inputs)}")
-    response = requests.post(url, headers=headers, json=payload)
-    print(f"[*] Generate response: {response.status_code}")
     
-    if response.status_code == 200:
-        return response.json()
-    else:
-        print(f"[!] Failed: {response.text}")
+    # Make the request with a timeout
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=120)
+        print(f"[*] Generate response: {response.status_code}")
+        
+        if response.status_code == 200:
+            result = response.json()
+            if result and 'output' in result and len(result['output']) > 0:
+                return result
+            else:
+                print(f"[!] No output in response: {result}")
+                if retry_count < 2:
+                    print(f"[*] Retrying... (attempt {retry_count + 2})")
+                    time.sleep(5)
+                    return generate_luno_image(cookie_value, project_id, prompt, ref_images, retry_count + 1)
+                return None
+        elif response.status_code == 429:
+            # Rate limited, wait and retry
+            print(f"[!] Rate limited, waiting 10 seconds...")
+            time.sleep(10)
+            if retry_count < 3:
+                return generate_luno_image(cookie_value, project_id, prompt, ref_images, retry_count + 1)
+            return None
+        else:
+            print(f"[!] Failed: {response.text}")
+            if retry_count < 2:
+                print(f"[*] Retrying... (attempt {retry_count + 2})")
+                time.sleep(5)
+                return generate_luno_image(cookie_value, project_id, prompt, ref_images, retry_count + 1)
+            return None
+    except requests.exceptions.Timeout:
+        print(f"[!] Request timeout")
+        if retry_count < 2:
+            print(f"[*] Retrying... (attempt {retry_count + 2})")
+            return generate_luno_image(cookie_value, project_id, prompt, ref_images, retry_count + 1)
+        return None
+    except Exception as e:
+        print(f"[!] Exception: {e}")
+        if retry_count < 2:
+            print(f"[*] Retrying... (attempt {retry_count + 2})")
+            time.sleep(5)
+            return generate_luno_image(cookie_value, project_id, prompt, ref_images, retry_count + 1)
         return None
 
 def run_luno_generation(prompt: str, size: str, ref_images: list = None) -> dict:
@@ -338,7 +372,7 @@ def run_luno_generation(prompt: str, size: str, ref_images: list = None) -> dict
             "download_url": image_url,
         }
     else:
-        raise RuntimeError("Image generation failed")
+        raise RuntimeError("Image generation failed - no output received")
 
 # ─── Temp email for Synthesia ──────────────────────────────────────────────
 
