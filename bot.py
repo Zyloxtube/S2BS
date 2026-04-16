@@ -97,7 +97,7 @@ def keep_alive():
     t.start()
 
 # ============================================================
-# LUNO STUDIO HELPER FUNCTIONS (Nano Banana Pro with Reference Images)
+# LUNO STUDIO HELPER FUNCTIONS (Nano Banana Pro)
 # ============================================================
 
 def generate_code_challenge():
@@ -162,7 +162,7 @@ def luno_signup(email, password, code_challenge):
     }
     
     print(f"\n[*] Sending signup request...")
-    response = requests.post(url, headers=LUNO_HEADERS, json=payload)
+    response = requests.post(url, headers=LUNO_HEADERS, json=payload, timeout=30)
     print(f"[*] Signup response: {response.status_code}")
     
     if response.status_code != 200:
@@ -181,7 +181,7 @@ def luno_verify_email(email, verification_code):
     }
     
     print(f"\n[*] Verifying with code: {verification_code}")
-    response = requests.post(url, headers=LUNO_HEADERS, json=payload)
+    response = requests.post(url, headers=LUNO_HEADERS, json=payload, timeout=30)
     print(f"[*] Verify response: {response.status_code}")
     
     if response.status_code != 200:
@@ -226,7 +226,7 @@ def create_luno_project(cookie_value, project_id, timestamp):
         "updatedAt": timestamp
     }
     
-    response = requests.post(url, headers=headers, json=payload)
+    response = requests.post(url, headers=headers, json=payload, timeout=30)
     print(f"[*] Create project response: {response.status_code}")
     
     if response.status_code == 200:
@@ -236,9 +236,8 @@ def create_luno_project(cookie_value, project_id, timestamp):
         print(f"[!] Failed: {response.text}")
         return None
 
-def upload_image_to_temp_url(image_bytes: bytes, filename: str) -> str:
-    """Upload image to a temporary CDN or use data URL"""
-    # For Luno Studio, we can use data URLs directly
+def upload_image_to_data_url(image_bytes: bytes, filename: str) -> str:
+    """Convert image to data URL for Luno Studio"""
     import base64
     ext = filename.split('.')[-1].lower()
     mime_type = f"image/{'jpeg' if ext == 'jpg' else ext}"
@@ -246,7 +245,7 @@ def upload_image_to_temp_url(image_bytes: bytes, filename: str) -> str:
     data_url = f"data:{mime_type};base64,{img_base64}"
     return data_url
 
-def generate_luno_image(cookie_value, project_id, prompt, ref_images, retry_count=0):
+def generate_luno_image(cookie_value, project_id, prompt, ref_images):
     """Generate AI image with Luno Studio using reference images"""
     url = "https://www.lunostudio.ai/api/generate"
     
@@ -263,7 +262,7 @@ def generate_luno_image(cookie_value, project_id, prompt, ref_images, retry_coun
     # Convert reference images to data URLs
     image_inputs = []
     for img_bytes, filename, ext in ref_images:
-        img_url = upload_image_to_temp_url(img_bytes, filename)
+        img_url = upload_image_to_data_url(img_bytes, filename)
         image_inputs.append(img_url)
     
     payload = {
@@ -282,49 +281,18 @@ def generate_luno_image(cookie_value, project_id, prompt, ref_images, retry_coun
     print(f"\n[*] Generating image with prompt: {prompt}")
     print(f"[*] Reference images: {len(image_inputs)}")
     
-    # Make the request with a timeout
-    try:
-        response = requests.post(url, headers=headers, json=payload, timeout=120)
-        print(f"[*] Generate response: {response.status_code}")
-        
-        if response.status_code == 200:
-            result = response.json()
-            if result and 'output' in result and len(result['output']) > 0:
-                return result
-            else:
-                print(f"[!] No output in response: {result}")
-                if retry_count < 2:
-                    print(f"[*] Retrying... (attempt {retry_count + 2})")
-                    time.sleep(5)
-                    return generate_luno_image(cookie_value, project_id, prompt, ref_images, retry_count + 1)
-                return None
-        elif response.status_code == 429:
-            # Rate limited, wait and retry
-            print(f"[!] Rate limited, waiting 10 seconds...")
-            time.sleep(10)
-            if retry_count < 3:
-                return generate_luno_image(cookie_value, project_id, prompt, ref_images, retry_count + 1)
-            return None
+    # Make the request with a longer timeout
+    response = requests.post(url, headers=headers, json=payload, timeout=180)
+    print(f"[*] Generate response: {response.status_code}")
+    
+    if response.status_code == 200:
+        result = response.json()
+        if result and 'output' in result and len(result['output']) > 0:
+            return result
         else:
-            print(f"[!] Failed: {response.text}")
-            if retry_count < 2:
-                print(f"[*] Retrying... (attempt {retry_count + 2})")
-                time.sleep(5)
-                return generate_luno_image(cookie_value, project_id, prompt, ref_images, retry_count + 1)
-            return None
-    except requests.exceptions.Timeout:
-        print(f"[!] Request timeout")
-        if retry_count < 2:
-            print(f"[*] Retrying... (attempt {retry_count + 2})")
-            return generate_luno_image(cookie_value, project_id, prompt, ref_images, retry_count + 1)
-        return None
-    except Exception as e:
-        print(f"[!] Exception: {e}")
-        if retry_count < 2:
-            print(f"[*] Retrying... (attempt {retry_count + 2})")
-            time.sleep(5)
-            return generate_luno_image(cookie_value, project_id, prompt, ref_images, retry_count + 1)
-        return None
+            raise Exception("No output in response")
+    else:
+        raise Exception(f"Generation failed with status {response.status_code}: {response.text}")
 
 def run_luno_generation(prompt: str, size: str, ref_images: list = None) -> dict:
     """Generate image using Luno Studio (Nano Banana Pro) with reference images"""
@@ -340,8 +308,6 @@ def run_luno_generation(prompt: str, size: str, ref_images: list = None) -> dict
     
     if not signup_result or 'id' not in signup_result:
         raise RuntimeError("Signup failed")
-    
-    user_id = signup_result['id']
     
     # Step 3: Get verification code
     verification_code = wait_for_verification_code(emailnator, email)
@@ -722,6 +688,10 @@ def _oreate_generate_password() -> str:
     return "Aa" + "".join(random.choices("0123456789abcdef", k=8)) + "1!"
 
 def _oreate_encrypt_password(plain_text: str, public_key_pem: str) -> str:
+    from Crypto.PublicKey import RSA
+    from Crypto.Cipher import PKCS1_v1_5
+    import base64 as _base64
+    
     clean_pem = public_key_pem.strip()
     if "BEGIN RSA PUBLIC KEY" in clean_pem:
         b64 = (
@@ -730,12 +700,12 @@ def _oreate_encrypt_password(plain_text: str, public_key_pem: str) -> str:
             .replace("-----END RSA PUBLIC KEY-----", "")
             .replace("\n", "").replace("\r", "").strip()
         )
-        key = RSA.import_key(base64.b64decode(b64))
+        key = RSA.import_key(_base64.b64decode(b64))
     else:
         key = RSA.import_key(clean_pem)
 
     cipher = PKCS1_v1_5.new(key)
-    return base64.b64encode(cipher.encrypt(plain_text.encode())).decode()
+    return _base64.b64encode(cipher.encrypt(plain_text.encode())).decode()
 
 def _oreate_upload_image_to_gcs(image_bytes: bytes, filename: str, ext: str, session_cookies: dict) -> dict:
     clean_name = re.sub(r"\.[^.]+$", "", filename)
@@ -821,7 +791,7 @@ def _oreate_upload_image_to_gcs(image_bytes: bytes, filename: str, ext: str, ses
         "status": 1,
     }
 
-def _oreate_extract_media_url_from_stream(response_text: str) -> str:
+def _oreate_extract_image_url_from_stream(response_text: str) -> str:
     if not response_text:
         return None
     
@@ -834,23 +804,20 @@ def _oreate_extract_media_url_from_stream(response_text: str) -> str:
                     return data['data']['imgUrl']
                 if data.get('data', {}).get('url'):
                     return data['data']['url']
-                if data.get('data', {}).get('videoUrl'):
-                    return data['data']['videoUrl']
                 if data.get('imgUrl'):
                     return data['imgUrl']
                 if data.get('url'):
                     return data['url']
-                if data.get('videoUrl'):
-                    return data['videoUrl']
             except (json.JSONDecodeError, KeyError):
                 pass
     
-    m = re.search(r"(https?://[^\s\"'<>]+\.(jpg|jpeg|png|gif|webp|bmp|mp4|mov|avi|webm|mkv)(\?[^\s\"'<>]*)?)", response_text, re.IGNORECASE)
+    m = re.search(r"(https?://[^\s\"'<>]+\.(jpg|jpeg|png|gif|webp|bmp)(\?[^\s\"'<>]*)?)", response_text, re.IGNORECASE)
     if m:
         return m.group(1)
     return None
 
 def run_oreate_generation(prompt: str, size: str, ref_images: list) -> dict:
+    # Step 1: Get ticket and public key
     ticket_res = requests.get(
         f"{OREATE_BASE}/passport/api/getticket",
         headers={
@@ -870,10 +837,12 @@ def run_oreate_generation(prompt: str, size: str, ref_images: list) -> dict:
     public_key = ticket_data["data"]["pk"]
     cookies = ticket_res.cookies.get_dict()
     
+    # Step 2: Generate account credentials
     email = _oreate_generate_email()
     password = _oreate_generate_password()
     encrypted_password = _oreate_encrypt_password(password, public_key)
     
+    # Step 3: Create account
     signup_res = requests.post(
         f"{OREATE_BASE}/passport/api/emailsignupin",
         headers={
@@ -903,6 +872,7 @@ def run_oreate_generation(prompt: str, size: str, ref_images: list) -> dict:
     session_cookies = signup_res.cookies.get_dict()
     session_cookies.update(cookies)
     
+    # Step 4: Upload reference images
     attachments = []
     for idx, (image_bytes, filename, file_ext) in enumerate(ref_images[:9]):
         try:
@@ -911,6 +881,7 @@ def run_oreate_generation(prompt: str, size: str, ref_images: list) -> dict:
         except Exception as e:
             print(f"Ref {idx+1} upload FAILED: {e}")
     
+    # Step 5: Create chat session
     chat_res = requests.post(
         f"{OREATE_BASE}/oreate/create/chat",
         headers={
@@ -931,6 +902,7 @@ def run_oreate_generation(prompt: str, size: str, ref_images: list) -> dict:
     if not chat_id:
         raise RuntimeError(f"OreateAI: no chatId in response")
     
+    # Step 6: Generate image via SSE stream
     jt_token = "31$eyJrIj4iOCI0Iix5IkciQEdIRExETEtPSEpOUiJJIkFqIjwiNTw9OUE5QT08Pz5CQSI+IjYzIlEiSlFSTlZOVTk5ODY1OiIzIit5IkYiQD9AIj4iOCJQIklHS09KUExQIi0ibSI/Il1Yem52dVYxXTV2M0t2R1grXGZBQDNqTjx6bk5vVDxyclRyY18pPC8tdGpGRkNhWHloM2l0NGNlZDNCd2dIdl1vKXRZQ0VeRWY2L0lcN3pOKTpEUkAtNFA8S0xnRFg1XjY9eTBcWFVxX2dEeHhNbUFqTWNMZU9mV1VRVnFIeXhRYHNyTlQzVUVnSDFsRWxbWlxuaEo7OzlpcExQSXNqVzY8cj49PVAqcmEwQV1JblxgPjVjbFFSLEE2TGV0cGdmR1gzTz8tWXZkUlpKZSlEWUE6WltrajpDQGVQMzZyM3A5bHNdYzxSY29USUlrWmNlb2MwTl5KLk5zVUR4NURnPjc6W3o1TFk/djFyR2o1V3hceilvNy9nUms0c2NRZjQ5djcwOipgL09YWXVFdEtnNDMtNylvT3Zzblc0dnBQV0d4T088Xm5xVFJIaTdcS2BrbkpQW11wLmlfb1VyUTMzbk42XixTQXFiU3k/LF9EW2BgeGwyYTMtbmYzOTVtR290LjxBMC09cWdCW1FJVHhkLT03ODpCZC8xQ2dWTDc1SyxOMi4seEA7UlQxKUlPfCk1X2BjO3MubVBScWJbODh4VWl1L0oscHRdclJXQV90Zmg1WWBJL2tVLjtcfDIyfGZnOmg9QUFDQ3BEQXN3SERNdkd5TXpPU1MuUFUzYzQ5In0="
     
     request_body = {
@@ -978,7 +950,7 @@ def run_oreate_generation(prompt: str, size: str, ref_images: list) -> dict:
     )
     sse_res.raise_for_status()
     
-    media_url = None
+    image_url = None
     full_response = ""
     
     for chunk in sse_res.iter_content(chunk_size=None, decode_unicode=True):
@@ -986,9 +958,9 @@ def run_oreate_generation(prompt: str, size: str, ref_images: list) -> dict:
             continue
         full_response += chunk
         
-        extracted = _oreate_extract_media_url_from_stream(chunk)
+        extracted = _oreate_extract_image_url_from_stream(chunk)
         if extracted:
-            media_url = extracted
+            image_url = extracted
             break
         
         lines = chunk.split("\n")
@@ -997,26 +969,26 @@ def run_oreate_generation(prompt: str, size: str, ref_images: list) -> dict:
                 try:
                     data = json.loads(line[6:])
                     if data.get("data", {}).get("imgUrl"):
-                        media_url = data["data"]["imgUrl"]
+                        image_url = data["data"]["imgUrl"]
                         break
                     if data.get("data", {}).get("url"):
-                        media_url = data["data"]["url"]
+                        image_url = data["data"]["url"]
                         break
                 except (json.JSONDecodeError, KeyError):
                     pass
         
-        if media_url:
+        if image_url:
             break
     
-    if not media_url:
-        media_url = _oreate_extract_media_url_from_stream(full_response)
+    if not image_url:
+        image_url = _oreate_extract_image_url_from_stream(full_response)
     
-    if not media_url:
-        raise RuntimeError("OreateAI: no media URL found in response")
+    if not image_url:
+        raise RuntimeError("OreateAI: no image URL found in response")
     
     return {
-        "url": media_url,
-        "download_url": media_url,
+        "url": image_url,
+        "download_url": image_url,
         "is_nanobanana2": True,
     }
 
@@ -1111,6 +1083,35 @@ def _oreate_upload_video_reference_image(image_bytes: bytes, filename: str, ext:
         "type": "file",
         "status": 1,
     }
+
+def _oreate_extract_video_url_from_stream(response_text: str) -> str:
+    if not response_text:
+        return None
+    
+    lines = response_text.split('\n')
+    for line in lines:
+        if line.startswith('data: '):
+            try:
+                data = json.loads(line[6:])
+                if data.get('data', {}).get('videoUrl'):
+                    return data['data']['videoUrl']
+                if data.get('data', {}).get('url'):
+                    url = data['data']['url']
+                    if url and any(url.endswith(ext) for ext in ['.mp4', '.mov', '.avi', '.webm', '.mkv']):
+                        return url
+                if data.get('videoUrl'):
+                    return data['videoUrl']
+                if data.get('url'):
+                    url = data['url']
+                    if url and any(url.endswith(ext) for ext in ['.mp4', '.mov', '.avi', '.webm', '.mkv']):
+                        return url
+            except (json.JSONDecodeError, KeyError):
+                pass
+    
+    m = re.search(r"(https?://[^\s\"'<>]+\.(mp4|mov|avi|webm|mkv)(\?[^\s\"'<>]*)?)", response_text, re.IGNORECASE)
+    if m:
+        return m.group(1)
+    return None
 
 def run_wan26_generation(prompt: str, size: str, ref_images: list = None) -> dict:
     ticket_res = requests.get(
@@ -1249,6 +1250,11 @@ def run_wan26_generation(prompt: str, size: str, ref_images: list = None) -> dic
             continue
         full_response += chunk
         
+        extracted = _oreate_extract_video_url_from_stream(chunk)
+        if extracted:
+            video_url = extracted
+            break
+        
         lines = chunk.split("\n")
         for line in lines:
             if line.startswith("data: "):
@@ -1268,19 +1274,11 @@ def run_wan26_generation(prompt: str, size: str, ref_images: list = None) -> dic
                 except (json.JSONDecodeError, KeyError):
                     pass
         
-        if not video_url:
-            url_match = re.search(r"(https?://[^\s\"'<>]+\.(mp4|mov|avi|webm|mkv)(\?[^\s\"'<>]*)?)", chunk, re.IGNORECASE)
-            if url_match:
-                video_url = url_match.group(1)
-                break
-        
         if video_url:
             break
     
     if not video_url:
-        url_match = re.search(r"(https?://[^\s\"'<>]+\.(mp4|mov|avi|webm|mkv)(\?[^\s\"'<>]*)?)", full_response, re.IGNORECASE)
-        if url_match:
-            video_url = url_match.group(1)
+        video_url = _oreate_extract_video_url_from_stream(full_response)
     
     if not video_url:
         raise RuntimeError("Wan 2.6: no video URL found in response")
