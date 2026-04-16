@@ -5,16 +5,13 @@ import time
 import asyncio
 import random
 import string
-import secrets
-import base64
-import hashlib
-import json
 import requests
 import discord
 from discord import app_commands
 from pycognito import Cognito
-from datetime import datetime
-from emailnator import Emailnator
+from urllib.parse import urlparse
+import json as _json
+import base64 as _base64
 from html.parser import HTMLParser
 from Crypto.PublicKey import RSA
 from Crypto.Cipher import PKCS1_v1_5
@@ -32,20 +29,6 @@ class SSLAdapter(HTTPAdapter):
         kwargs['assert_hostname'] = False
         return super().init_poolmanager(*args, **kwargs)
 
-# Create a session that ignores SSL verification for image downloads
-download_session = requests.Session()
-download_session.mount('https://', SSLAdapter())
-download_session.verify = False
-
-# ============================================================
-# LUNO STUDIO CONFIGURATION (Nano Banana Pro)
-# ============================================================
-SUPABASE_URL = "https://liuvfhbmbtunebdwhiqh.supabase.co"
-API_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxpdXZmaGJtYnR1bmViZHdoaXFoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ2MTY0MTYsImV4cCI6MjA5MDE5MjQxNn0.R8Ybduar3YilzBwbK3V8bgNSUQO66VDQmDgmNNjeVsI"
-
-# ============================================================
-# DISCORD CONFIGURATION
-# ============================================================
 PASSWORD = "Test1234Abc!"
 COGNITO_CLIENT_ID = "1kvg8re5bgu9ljqnnkjosu477k"
 USER_POOL_ID = "eu-west-1_7hEawdalF"
@@ -61,10 +44,22 @@ ERROR_COLOR = 0xED4245
 PROGRESS_COLOR = 0xFEE75C
 INFO_COLOR = 0x5865F2
 
+BROWSER_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Referer": "https://oreateai.com/",
+    "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
 intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
 tree = app_commands.CommandTree(client)
+
+# Create a session that ignores SSL verification for image downloads
+download_session = requests.Session()
+download_session.mount('https://', SSLAdapter())
+download_session.verify = False
 
 # ─── إعداد خادم الويب (لـ Render) ─────────────────────────────────────────────
 app = Flask(__name__)
@@ -84,283 +79,7 @@ def keep_alive():
     t = Thread(target=run_web)
     t.start()
 
-# ============================================================
-# LUNO STUDIO HELPER FUNCTIONS (Nano Banana Pro)
-# ============================================================
-
-def generate_code_challenge():
-    code_verifier = secrets.token_urlsafe(32)
-    code_challenge = base64.urlsafe_b64encode(
-        hashlib.sha256(code_verifier.encode()).digest()
-    ).decode().replace('=', '')
-    return code_challenge, code_verifier
-
-def get_temp_email():
-    emailnator = Emailnator()
-    email_data = emailnator.generate_email()
-    email = email_data["email"][0]
-    print(f"[+] Generated email: {email}")
-    return emailnator, email
-
-def wait_for_verification_code(emailnator, email, timeout=120):
-    print("\n[*] Waiting for verification code...")
-    start_time = time.time()
-    seen_messages = set()
-    
-    while time.time() - start_time < timeout:
-        try:
-            inbox_result = emailnator.inbox(email)
-            messages = []
-            if isinstance(inbox_result, dict) and "messageData" in inbox_result:
-                messages = inbox_result["messageData"]
-            
-            for msg in messages:
-                msg_id = str(msg)
-                if msg_id in seen_messages:
-                    continue
-                seen_messages.add(msg_id)
-                
-                try:
-                    full_message = emailnator.get_message(email, msg if isinstance(msg, str) else msg.get('messageID', ''))
-                    message_str = str(full_message)
-                    
-                    if 'luno' in message_str.lower() or 'confirm your signup' in message_str.lower():
-                        code_match = re.search(r'\b(\d{6})\b', message_str)
-                        if code_match:
-                            code = code_match.group(1)
-                            print(f"✅ VERIFICATION CODE: {code}")
-                            return code
-                except:
-                    pass
-        except:
-            pass
-        time.sleep(0.5)
-    
-    raise Exception("Timeout: No verification code received")
-
-def signup(email, password, code_challenge):
-    url = f"{SUPABASE_URL}/auth/v1/signup"
-    payload = {
-        "email": email,
-        "password": password,
-        "data": {},
-        "gotrue_meta_security": {},
-        "code_challenge": code_challenge,
-        "code_challenge_method": "s256"
-    }
-    
-    headers = {
-        "accept": "*/*",
-        "accept-language": "en-US,en;q=0.9",
-        "apikey": API_KEY,
-        "content-type": "application/json;charset=UTF-8",
-        "origin": "https://www.lunostudio.ai",
-        "referer": "https://www.lunostudio.ai/",
-        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "x-client-info": "supabase-ssr/0.9.0 createBrowserClient",
-        "x-supabase-api-version": "2024-01-01"
-    }
-    
-    print(f"\n[*] Sending signup request...")
-    response = requests.post(url, headers=headers, json=payload, timeout=30)
-    print(f"[*] Signup response: {response.status_code}")
-    
-    if response.status_code != 200:
-        print(f"[!] Error: {response.text[:200]}")
-        return None
-    
-    return response.json()
-
-def verify_email(email, verification_code):
-    url = f"{SUPABASE_URL}/auth/v1/verify"
-    payload = {
-        "email": email,
-        "token": verification_code,
-        "type": "signup",
-        "gotrue_meta_security": {}
-    }
-    
-    headers = {
-        "accept": "*/*",
-        "accept-language": "en-US,en;q=0.9",
-        "apikey": API_KEY,
-        "content-type": "application/json;charset=UTF-8",
-        "origin": "https://www.lunostudio.ai",
-        "referer": "https://www.lunostudio.ai/",
-        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "x-client-info": "supabase-ssr/0.9.0 createBrowserClient",
-        "x-supabase-api-version": "2024-01-01"
-    }
-    
-    print(f"\n[*] Verifying with code: {verification_code}")
-    response = requests.post(url, headers=headers, json=payload, timeout=30)
-    print(f"[*] Verify response: {response.status_code}")
-    
-    if response.status_code != 200:
-        print(f"[!] Error: {response.text[:200]}")
-        return None
-    
-    return response.json()
-
-def create_cookie_value(verify_result):
-    """Create the exact cookie value format from the verify result"""
-    cookie_data = {
-        "access_token": verify_result['access_token'],
-        "token_type": verify_result.get('token_type', 'bearer'),
-        "expires_in": verify_result.get('expires_in', 3600),
-        "expires_at": verify_result.get('expires_at'),
-        "refresh_token": verify_result.get('refresh_token'),
-        "user": verify_result.get('user')
-    }
-    
-    json_str = json.dumps(cookie_data)
-    base64_encoded = base64.b64encode(json_str.encode()).decode()
-    return f"base64-{base64_encoded}"
-
-def create_project(cookie_value, project_id, timestamp):
-    """Create a new project with the cookie"""
-    url = "https://www.lunostudio.ai/api/projects"
-    
-    headers = {
-        "accept": "*/*",
-        "accept-language": "en-US,en;q=0.9",
-        "content-type": "application/json",
-        "cookie": f"geo-country=US; sb-liuvfhbmbtunebdwhiqh-auth-token={cookie_value}",
-        "origin": "https://www.lunostudio.ai",
-        "referer": "https://www.lunostudio.ai/dashboard",
-        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "sec-ch-ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-        "sec-ch-ua-mobile": "?0",
-        "sec-ch-ua-platform": '"Windows"',
-        "sec-fetch-dest": "empty",
-        "sec-fetch-mode": "cors",
-        "sec-fetch-site": "same-origin"
-    }
-    
-    payload = {
-        "id": project_id,
-        "name": "Untitled",
-        "createdAt": timestamp,
-        "updatedAt": timestamp
-    }
-    
-    response = requests.post(url, headers=headers, json=payload, timeout=30)
-    print(f"[*] Create project response: {response.status_code}")
-    
-    if response.status_code == 200:
-        print(f"[+] Project created successfully!")
-        return response.json()
-    else:
-        print(f"[!] Failed: {response.text[:200]}")
-        return None
-
-def generate_image(cookie_value, project_id, prompt, ref_images):
-    """Generate AI image with the cookie"""
-    url = "https://www.lunostudio.ai/api/generate"
-    
-    headers = {
-        "accept": "*/*",
-        "accept-language": "en-US,en;q=0.9",
-        "content-type": "application/json",
-        "cookie": f"geo-country=US; sb-liuvfhbmbtunebdwhiqh-auth-token={cookie_value}",
-        "origin": "https://www.lunostudio.ai",
-        "referer": f"https://www.lunostudio.ai/project/{project_id}",
-        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "sec-ch-ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-        "sec-ch-ua-mobile": "?0",
-        "sec-ch-ua-platform": '"Windows"',
-        "sec-fetch-dest": "empty",
-        "sec-fetch-mode": "cors",
-        "sec-fetch-site": "same-origin",
-        "priority": "u=1, i",
-        "pragma": "no-cache",
-        "cache-control": "no-cache"
-    }
-    
-    # Convert reference images to data URLs
-    image_inputs = []
-    for img_bytes, filename, ext in ref_images:
-        mime_type = f"image/{'jpeg' if ext == 'jpg' else ext}"
-        img_base64 = base64.b64encode(img_bytes).decode()
-        data_url = f"data:{mime_type};base64,{img_base64}"
-        image_inputs.append(data_url)
-    
-    payload = {
-        "prompt": prompt,
-        "aspectRatio": "1:1",
-        "model": "google/nano-banana-pro",
-        "imageInput": image_inputs if image_inputs else [],
-        "duration": 4,
-        "generateAudio": True,
-        "resolution": "1K",
-        "modelOptions": {
-            "grounding": "off"
-        }
-    }
-    
-    print(f"\n[*] Generating image with prompt: {prompt}")
-    print(f"[*] Reference images: {len(image_inputs)}")
-    
-    try:
-        response = requests.post(url, headers=headers, json=payload, timeout=180)
-        print(f"[*] Generate response: {response.status_code}")
-        
-        if response.status_code == 200:
-            return response.json()
-        else:
-            print(f"[!] Failed: {response.text[:500]}")
-            return None
-    except Exception as e:
-        print(f"[!] Exception: {e}")
-        return None
-
-def run_luno_generation(prompt: str, size: str, ref_images: list = None) -> dict:
-    """Generate image using Luno Studio (Nano Banana Pro)"""
-    
-    # Step 1: Generate temporary email
-    emailnator, email = get_temp_email()
-    
-    password = secrets.token_urlsafe(12)
-    code_challenge, code_verifier = generate_code_challenge()
-    
-    # Step 2: Sign up
-    signup_result = signup(email, password, code_challenge)
-    
-    if not signup_result or 'id' not in signup_result:
-        raise RuntimeError("Signup failed")
-    
-    # Step 3: Get verification code
-    verification_code = wait_for_verification_code(emailnator, email)
-    
-    # Step 4: Verify email
-    verify_result = verify_email(email, verification_code)
-    
-    if not verify_result or 'access_token' not in verify_result:
-        raise RuntimeError("Verification failed")
-    
-    # Step 5: Create cookie and project
-    cookie_value = create_cookie_value(verify_result)
-    timestamp = int(time.time() * 1000)
-    project_id = f"proj-{timestamp}-{secrets.token_urlsafe(5).replace('-', '')}"
-    
-    project_result = create_project(cookie_value, project_id, timestamp)
-    
-    if not project_result:
-        raise RuntimeError("Project creation failed")
-    
-    # Step 6: Generate image
-    generation_result = generate_image(cookie_value, project_id, prompt, ref_images or [])
-    
-    if generation_result and 'output' in generation_result and len(generation_result['output']) > 0:
-        image_url = generation_result['output'][0]
-        return {
-            "url": image_url,
-            "download_url": image_url,
-        }
-    else:
-        raise RuntimeError("Image generation failed - no output received")
-
-# ─── Temp email for Synthesia ──────────────────────────────────────────────
+# ─── Temp email ──────────────────────────────────────────────────────────────
 
 class TempEmail:
     def __init__(self):
@@ -441,7 +160,7 @@ class TempEmail:
             time.sleep(interval)
         return None
 
-# ─── Cognito auth for Synthesia ─────────────────────────────────────────────
+# ─── Cognito auth ─────────────────────────────────────────────────────────────
 
 def sign_up_with_cognito(email):
     try:
@@ -696,7 +415,7 @@ def run_synthesia_generation(prompt: str, size: str, model: str) -> dict:
         "download_url": result.get("downloadUrl", ""),
     }
 
-# ─── OreateAI image generation (Nano Banana 2) ───────────────────────────────
+# ─── OreateAI image generation (Nano Banana 2) with correct upload method ───
 
 _OREATE_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 
@@ -716,16 +435,18 @@ def _oreate_encrypt_password(plain_text: str, public_key_pem: str) -> str:
             .replace("-----END RSA PUBLIC KEY-----", "")
             .replace("\n", "").replace("\r", "").strip()
         )
-        key = RSA.import_key(base64.b64decode(b64))
+        key = RSA.import_key(_base64.b64decode(b64))
     else:
         key = RSA.import_key(clean_pem)
 
     cipher = PKCS1_v1_5.new(key)
-    return base64.b64encode(cipher.encrypt(plain_text.encode())).decode()
+    return _base64.b64encode(cipher.encrypt(plain_text.encode())).decode()
 
 def _oreate_upload_image_to_gcs(image_bytes: bytes, filename: str, ext: str, session_cookies: dict) -> dict:
+    """Upload image to GCS using the correct method from oreate_upload.ts"""
     clean_name = re.sub(r"\.[^.]+$", "", filename)
     
+    # Step 1: Get upload token from OreateAI
     token_res = requests.post(
         f"{OREATE_BASE}/oreate/convert/getuploadbostoken",
         headers={
@@ -747,18 +468,21 @@ def _oreate_upload_image_to_gcs(image_bytes: bytes, filename: str, ext: str, ses
     if token_json.get("status", {}).get("code") != 0:
         raise RuntimeError(f"Upload token failed: {token_json.get('status', {}).get('msg')}")
     
+    # Get key data
     key_list = token_json.get("data", {}).get("KeyList", {})
     key_data = key_list.get(f"{clean_name}.{ext}")
     if not key_data and key_list:
+        # Try to get first available key
         key_data = list(key_list.values())[0]
     if not key_data:
-        raise RuntimeError(f"No upload token key received")
+        raise RuntimeError(f"No upload token key received. Available: {list(key_list.keys())}")
     
     bucket = key_data["bucket"]
     object_path = key_data["objectPath"]
     session_key = key_data["sessionkey"]
     content_type = f"image/{'jpeg' if ext == 'jpg' else ext}"
     
+    # Step 2: Initialize GCS resumable upload
     gcs_init_url = (
         f"https://storage.googleapis.com/upload/storage/v1/b/{bucket}/o"
         f"?uploadType=resumable&name={requests.utils.quote(object_path, safe='')}"
@@ -783,6 +507,7 @@ def _oreate_upload_image_to_gcs(image_bytes: bytes, filename: str, ext: str, ses
     if not upload_url:
         raise RuntimeError("GCS did not return upload URL")
     
+    # Step 3: Upload binary data to GCS
     put_res = requests.put(
         upload_url,
         headers={
@@ -796,6 +521,7 @@ def _oreate_upload_image_to_gcs(image_bytes: bytes, filename: str, ext: str, ses
     if not put_res.ok:
         raise RuntimeError(f"GCS upload failed: {put_res.status_code}")
     
+    # Return attachment object for generation request
     return {
         "bos_url": object_path,
         "doc_title": clean_name,
@@ -808,14 +534,16 @@ def _oreate_upload_image_to_gcs(image_bytes: bytes, filename: str, ext: str, ses
     }
 
 def _oreate_extract_image_url_from_stream(response_text: str) -> str:
+    """Extract image URL from SSE stream response"""
     if not response_text:
         return None
     
+    # Look for imgUrl or url in data events
     lines = response_text.split('\n')
     for line in lines:
         if line.startswith('data: '):
             try:
-                data = json.loads(line[6:])
+                data = _json.loads(line[6:])
                 if data.get('data', {}).get('imgUrl'):
                     return data['data']['imgUrl']
                 if data.get('data', {}).get('url'):
@@ -824,15 +552,18 @@ def _oreate_extract_image_url_from_stream(response_text: str) -> str:
                     return data['imgUrl']
                 if data.get('url'):
                     return data['url']
-            except (json.JSONDecodeError, KeyError):
+            except (_json.JSONDecodeError, KeyError):
                 pass
     
+    # Fallback: find URL in text
     m = re.search(r"(https?://[^\s\"'<>]+\.(jpg|jpeg|png|gif|webp|bmp)(\?[^\s\"'<>]*)?)", response_text, re.IGNORECASE)
     if m:
         return m.group(1)
     return None
 
 def run_oreate_generation(prompt: str, size: str, ref_images: list) -> dict:
+    """Generate image using Nano Banana 2 with correct upload method"""
+    
     # Step 1: Get ticket and public key
     ticket_res = requests.get(
         f"{OREATE_BASE}/passport/api/getticket",
@@ -851,6 +582,8 @@ def run_oreate_generation(prompt: str, size: str, ref_images: list) -> dict:
     
     ticket_id = ticket_data["data"]["ticketID"]
     public_key = ticket_data["data"]["pk"]
+    
+    # Extract cookies from ticket response
     cookies = ticket_res.cookies.get_dict()
     
     # Step 2: Generate account credentials
@@ -885,8 +618,12 @@ def run_oreate_generation(prompt: str, size: str, ref_images: list) -> dict:
     if signup_data.get("status", {}).get("code") != 0:
         raise RuntimeError(f"OreateAI signup failed: {signup_data.get('status', {}).get('msg')}")
     
+    # Update cookies with session cookies
     session_cookies = signup_res.cookies.get_dict()
     session_cookies.update(cookies)
+    
+    # Extract OUID if present
+    ouid = session_cookies.get('OUID', '')
     
     # Step 4: Upload reference images
     attachments = []
@@ -894,6 +631,7 @@ def run_oreate_generation(prompt: str, size: str, ref_images: list) -> dict:
         try:
             att = _oreate_upload_image_to_gcs(image_bytes, filename, file_ext, session_cookies)
             attachments.append(att)
+            print(f"Uploaded reference image {idx+1}: {att['bos_url']}")
         except Exception as e:
             print(f"Ref {idx+1} upload FAILED: {e}")
     
@@ -966,6 +704,7 @@ def run_oreate_generation(prompt: str, size: str, ref_images: list) -> dict:
     )
     sse_res.raise_for_status()
     
+    # Parse SSE stream
     image_url = None
     full_response = ""
     
@@ -974,28 +713,31 @@ def run_oreate_generation(prompt: str, size: str, ref_images: list) -> dict:
             continue
         full_response += chunk
         
+        # Try to extract image URL from each chunk
         extracted = _oreate_extract_image_url_from_stream(chunk)
         if extracted:
             image_url = extracted
             break
         
+        # Parse JSON from data lines
         lines = chunk.split("\n")
         for line in lines:
             if line.startswith("data: "):
                 try:
-                    data = json.loads(line[6:])
+                    data = _json.loads(line[6:])
                     if data.get("data", {}).get("imgUrl"):
                         image_url = data["data"]["imgUrl"]
                         break
                     if data.get("data", {}).get("url"):
                         image_url = data["data"]["url"]
                         break
-                except (json.JSONDecodeError, KeyError):
+                except (_json.JSONDecodeError, KeyError):
                     pass
         
         if image_url:
             break
     
+    # Final fallback extraction
     if not image_url:
         image_url = _oreate_extract_image_url_from_stream(full_response)
     
@@ -1008,17 +750,20 @@ def run_oreate_generation(prompt: str, size: str, ref_images: list) -> dict:
         "is_nanobanana2": True,
     }
 
-# ─── Wan 2.6 Video Generation via OreateAI ─────────────────────────────────────
+# ─── Wan 2.6 Video Generation with Reference Images ─────────────────────────────
 
 def _oreate_generate_video_password() -> str:
+    """Generate password for video account"""
     chars = []
     for _ in range(8):
         chars.append(random.choice("0123456789abcdef"))
     return "Aa" + "".join(chars) + "1"
 
 def _oreate_upload_video_reference_image(image_bytes: bytes, filename: str, ext: str, session_cookies: dict) -> dict:
+    """Upload reference image for video generation"""
     clean_name = re.sub(r"\.[^.]+$", "", filename)
     
+    # Step 1: Get upload token from OreateAI
     token_res = requests.post(
         f"{OREATE_BASE}/oreate/convert/getuploadbostoken",
         headers={
@@ -1040,18 +785,20 @@ def _oreate_upload_video_reference_image(image_bytes: bytes, filename: str, ext:
     if token_json.get("status", {}).get("code") != 0:
         raise RuntimeError(f"Upload token failed: {token_json.get('status', {}).get('msg')}")
     
+    # Get key data
     key_list = token_json.get("data", {}).get("KeyList", {})
     key_data = key_list.get(f"{clean_name}.{ext}")
     if not key_data and key_list:
         key_data = list(key_list.values())[0]
     if not key_data:
-        raise RuntimeError(f"No upload token key received")
+        raise RuntimeError(f"No upload token key received. Available: {list(key_list.keys())}")
     
     bucket = key_data["bucket"]
     object_path = key_data["objectPath"]
     session_key = key_data["sessionkey"]
     content_type = f"image/{'jpeg' if ext == 'jpg' else ext}"
     
+    # Step 2: Initialize GCS resumable upload
     gcs_init_url = (
         f"https://storage.googleapis.com/upload/storage/v1/b/{bucket}/o"
         f"?uploadType=resumable&name={requests.utils.quote(object_path, safe='')}"
@@ -1076,6 +823,7 @@ def _oreate_upload_video_reference_image(image_bytes: bytes, filename: str, ext:
     if not upload_url:
         raise RuntimeError("GCS did not return upload URL")
     
+    # Step 3: Upload binary data to GCS
     put_res = requests.put(
         upload_url,
         headers={
@@ -1089,6 +837,7 @@ def _oreate_upload_video_reference_image(image_bytes: bytes, filename: str, ext:
     if not put_res.ok:
         raise RuntimeError(f"GCS upload failed: {put_res.status_code}")
     
+    # Return attachment object for generation request
     return {
         "bos_url": object_path,
         "doc_title": clean_name,
@@ -1100,36 +849,10 @@ def _oreate_upload_video_reference_image(image_bytes: bytes, filename: str, ext:
         "status": 1,
     }
 
-def _oreate_extract_video_url_from_stream(response_text: str) -> str:
-    if not response_text:
-        return None
-    
-    lines = response_text.split('\n')
-    for line in lines:
-        if line.startswith('data: '):
-            try:
-                data = json.loads(line[6:])
-                if data.get('data', {}).get('videoUrl'):
-                    return data['data']['videoUrl']
-                if data.get('data', {}).get('url'):
-                    url = data['data']['url']
-                    if url and any(url.endswith(ext) for ext in ['.mp4', '.mov', '.avi', '.webm', '.mkv']):
-                        return url
-                if data.get('videoUrl'):
-                    return data['videoUrl']
-                if data.get('url'):
-                    url = data['url']
-                    if url and any(url.endswith(ext) for ext in ['.mp4', '.mov', '.avi', '.webm', '.mkv']):
-                        return url
-            except (json.JSONDecodeError, KeyError):
-                pass
-    
-    m = re.search(r"(https?://[^\s\"'<>]+\.(mp4|mov|avi|webm|mkv)(\?[^\s\"'<>]*)?)", response_text, re.IGNORECASE)
-    if m:
-        return m.group(1)
-    return None
-
 def run_wan26_generation(prompt: str, size: str, ref_images: list = None) -> dict:
+    """Generate video using Wan 2.6 with reference images support"""
+    
+    # Step 1: Get ticket and public key (for video)
     ticket_res = requests.get(
         f"{OREATE_BASE}/passport/api/getticket",
         headers={
@@ -1147,12 +870,16 @@ def run_wan26_generation(prompt: str, size: str, ref_images: list = None) -> dic
     
     ticket_id = ticket_data["data"]["ticketID"]
     public_key = ticket_data["data"]["pk"]
+    
+    # Extract cookies from ticket response
     cookies = ticket_res.cookies.get_dict()
     
+    # Step 2: Generate account credentials
     email = _oreate_generate_email()
     password = _oreate_generate_video_password()
     encrypted_password = _oreate_encrypt_password(password, public_key)
     
+    # Step 3: Create account (using GGSEMVIDEO for video)
     signup_res = requests.post(
         f"{OREATE_BASE}/passport/api/emailsignupin",
         headers={
@@ -1179,18 +906,22 @@ def run_wan26_generation(prompt: str, size: str, ref_images: list = None) -> dic
     if signup_data.get("status", {}).get("code") != 0:
         raise RuntimeError(f"Wan 2.6 signup failed: {signup_data.get('status', {}).get('msg')}")
     
+    # Update cookies with session cookies
     session_cookies = signup_res.cookies.get_dict()
     session_cookies.update(cookies)
     
+    # Step 4: Upload reference images (if any)
     attachments = []
     if ref_images:
         for idx, (image_bytes, filename, file_ext) in enumerate(ref_images[:9]):
             try:
                 att = _oreate_upload_video_reference_image(image_bytes, filename, file_ext, session_cookies)
                 attachments.append(att)
+                print(f"Uploaded reference image {idx+1} for video: {att['bos_url']}")
             except Exception as e:
                 print(f"Ref {idx+1} upload FAILED: {e}")
     
+    # Step 5: Create video chat session
     chat_res = requests.post(
         f"{OREATE_BASE}/oreate/create/chat",
         headers={
@@ -1211,6 +942,7 @@ def run_wan26_generation(prompt: str, size: str, ref_images: list = None) -> dic
     if not chat_id:
         raise RuntimeError(f"Wan 2.6: no chatId in response")
     
+    # Step 6: Generate video via SSE stream
     jt_token = "31$eyJrIj4iOCI0Iix5IkciQEdIRExETEtPSEpOUiJJIkFqIjwiNTw9OUE5QT08Pz5CQSI+IjYzIlEiSlFSTlZOVTk5ODY1OiIzIit5IkYiQD9AIj4iOCJQIklHS09KUExQIi0ibSI/Il1Yem52dVYxXTV2M0t2R1grXGZBQDNqTjx6bk5vVDxyclRyY18pPC8tdGpGRkNhWHloM2l0NGNlZDNCd2dIdl1vKXRZQ0VeRWY2L0lcN3pOKTpEUkAtNFA8S0xnRFg1XjY9eTBcWFVxX2dEeHhNbUFqTWNMZU9mV1VRVnFIeXhRYHNyTlQzVUVnSDFsRWxbWlxuaEo7OzlpcExQSXNqVzY8cj49PVAqcmEwQV1JblxgPjVjbFFSLEE2TGV0cGdmR1gzTz8tWXZkUlpKZSlEWUE6WltrajpDQGVQMzZyM3A5bHNdYzxSY29USUlrWmNlb2MwTl5KLk5zVUR4NURnPjc6W3o1TFk/djFyR2o1V3hceilvNy9nUms0c2NRZjQ5djcwOipgL09YWXVFdEtnNDMtNylvT3Zzblc0dnBQV0d4T088Xm5xVFJIaTdcS2BrbkpQW11wLmlfb1VyUTMzbk42XixTQXFiU3k/LF9EW2BgeGwyYTMtbmYzOTVtR290LjxBMC09cWdCW1FJVHhkLT03ODpCZC8xQ2dWTDc1SyxOMi4seEA7UlQxKUlPfCk1X2BjO3MubVBScWJbODh4VWl1L0oscHRdclJXQV90Zmg1WWBJL2tVLjtcfDIyfGZnOmg9QUFDQ3BEQXN3SERNdkd5TXpPU1MuUFUzYzQ5In0="
     
     request_body = {
@@ -1258,6 +990,7 @@ def run_wan26_generation(prompt: str, size: str, ref_images: list = None) -> dic
     )
     sse_res.raise_for_status()
     
+    # Parse SSE stream for video URL
     video_url = None
     full_response = ""
     
@@ -1266,16 +999,12 @@ def run_wan26_generation(prompt: str, size: str, ref_images: list = None) -> dic
             continue
         full_response += chunk
         
-        extracted = _oreate_extract_video_url_from_stream(chunk)
-        if extracted:
-            video_url = extracted
-            break
-        
+        # Look for video URLs in the stream
         lines = chunk.split("\n")
         for line in lines:
             if line.startswith("data: "):
                 try:
-                    data = json.loads(line[6:])
+                    data = _json.loads(line[6:])
                     if data.get("data", {}).get("videoUrl"):
                         video_url = data["data"]["videoUrl"]
                         break
@@ -1287,14 +1016,27 @@ def run_wan26_generation(prompt: str, size: str, ref_images: list = None) -> dic
                     if data.get("videoUrl"):
                         video_url = data["videoUrl"]
                         break
-                except (json.JSONDecodeError, KeyError):
+                    if data.get("url"):
+                        url = data["url"]
+                        if url and any(url.endswith(ext) for ext in ['.mp4', '.mov', '.avi', '.webm', '.mkv']):
+                            video_url = url
+                            break
+                except (_json.JSONDecodeError, KeyError):
                     pass
+        
+        if not video_url:
+            url_match = re.search(r"(https?://[^\s\"'<>]+\.(mp4|mov|avi|webm|mkv)(\?[^\s\"'<>]*)?)", chunk, re.IGNORECASE)
+            if url_match:
+                video_url = url_match.group(1)
+                break
         
         if video_url:
             break
     
     if not video_url:
-        video_url = _oreate_extract_video_url_from_stream(full_response)
+        url_match = re.search(r"(https?://[^\s\"'<>]+\.(mp4|mov|avi|webm|mkv)(\?[^\s\"'<>]*)?)", full_response, re.IGNORECASE)
+        if url_match:
+            video_url = url_match.group(1)
     
     if not video_url:
         raise RuntimeError("Wan 2.6: no video URL found in response")
@@ -1504,8 +1246,6 @@ def run_seedance2_generation(prompt: str) -> dict:
 # ─── Dispatch ─────────────────────────────────────────────────────────────────
 
 def run_generation(prompt: str, size: str, model: str, ref_images: list = None) -> dict:
-    if model == "nanobanana_pro":
-        return run_luno_generation(prompt, size, ref_images or [])
     if model == "nanobanana_2":
         return run_oreate_generation(prompt, size, ref_images or [])
     if model == "seedance_2":
@@ -1526,9 +1266,10 @@ PROGRESS_STAGES = [
     {"threshold": 0,   "label": "Initializing",         "emoji": "⚙️"},
     {"threshold": 5,   "label": "Creating account",     "emoji": "📧"},
     {"threshold": 15,  "label": "Verifying email",      "emoji": "✉️"},
-    {"threshold": 30,  "label": "Creating project",     "emoji": "📁"},
-    {"threshold": 45,  "label": "Generating image",     "emoji": "🎨"},
-    {"threshold": 90,  "label": "Finalizing",           "emoji": "✨"},
+    {"threshold": 30,  "label": "Setting up workspace", "emoji": "🛠️"},
+    {"threshold": 65,  "label": "Generating media",     "emoji": "🎨"},
+    {"threshold": 120, "label": "Rendering",            "emoji": "🎬"},
+    {"threshold": 300, "label": "Finalizing",           "emoji": "✨"},
 ]
 
 NB2_PROGRESS_STAGES = [
@@ -1576,7 +1317,7 @@ def build_progress_embed(prompt, size_label, elapsed, model_label, model_value="
         estimated_total = 120
     else:
         stages = PROGRESS_STAGES
-        estimated_total = 120
+        estimated_total = 180
 
     stage = get_stage(elapsed, stages)
 
@@ -1613,12 +1354,11 @@ def build_success_embed(prompt, size_label, duration, model_label, model_value="
     embed.add_field(name="🧠 Model", value=f"`{model_label}`", inline=True)
     embed.add_field(name="⏱️ Time Taken", value=f"`{format_duration(duration)}`", inline=True)
     
+    # Add reference images section if any
     if ref_images and len(ref_images) > 0:
         ref_text = ""
-        for idx, (img_bytes, filename, ext) in enumerate(ref_images[:9], 1):
-            img_base64 = base64.b64encode(img_bytes).decode()
-            data_url = f"data:image/{ext};base64,{img_base64}"
-            ref_text += f"📷 **Ref {idx}:** [{filename}]({data_url})\n"
+        for idx, (_, filename, _) in enumerate(ref_images[:9], 1):
+            ref_text += f"📷 **Ref {idx}:** `{filename}`\n"
         embed.add_field(name=f"🖼️ Reference Images ({len(ref_images)})", value=ref_text, inline=False)
     
     embed.set_footer(text=f"Powered by {model_label}")
@@ -1635,12 +1375,11 @@ def build_error_embed(error_msg, prompt, size_label, model_label, model_value=""
         embed.add_field(name="📏 Size", value=f"`{size_label}`", inline=True)
     embed.add_field(name="🧠 Model", value=f"`{model_label}`", inline=True)
     
+    # Add reference images section if any
     if ref_images and len(ref_images) > 0:
         ref_text = ""
-        for idx, (img_bytes, filename, ext) in enumerate(ref_images[:9], 1):
-            img_base64 = base64.b64encode(img_bytes).decode()
-            data_url = f"data:image/{ext};base64,{img_base64}"
-            ref_text += f"📷 **Ref {idx}:** [{filename}]({data_url})\n"
+        for idx, (_, filename, _) in enumerate(ref_images[:9], 1):
+            ref_text += f"📷 **Ref {idx}:** `{filename}`\n"
         embed.add_field(name=f"🖼️ Reference Images ({len(ref_images)})", value=ref_text, inline=False)
     
     embed.add_field(name="⚠️ Error", value=f"```{str(error_msg)[:500]}```", inline=False)
@@ -1657,7 +1396,6 @@ SIZE_LABELS = {
 }
 
 size_choices = [
-    app_commands.Choice(name="1:1",        value="1080x1080"),
     app_commands.Choice(name="16:9",       value="1280x720"),
     app_commands.Choice(name="9:16",       value="720x1280"),
     app_commands.Choice(name="AI decided", value="ai_decide"),
@@ -1698,8 +1436,8 @@ async def on_ready():
 @app_commands.describe(
     prompt="What the media should show",
     model="AI model to use (default: Nano Banana Pro)",
-    size="Resolution",
-    ref1="Reference image 1 (Nano Banana Pro / Nano Banana 2 / Wan 2.6)",
+    size="Video resolution",
+    ref1="Reference image 1 (Nano Banana 2 / Wan 2.6 only)",
     ref2="Reference image 2",
     ref3="Reference image 3",
     ref4="Reference image 4",
@@ -1749,8 +1487,11 @@ async def generate(
         size_value = raw_size
         size_label = SIZE_LABELS.get(size_value, size_value)
 
+    actual_prompt = prompt
+
     ref_images = []
-    if model_value in ["nanobanana_pro", "nanobanana_2", "wan_2_6"]:
+    # Allow reference images for Nano Banana 2 AND Wan 2.6
+    if model_value in ["nanobanana_2", "wan_2_6"]:
         raw_refs = [ref1, ref2, ref3, ref4, ref5, ref6, ref7, ref8, ref9]
         bad_refs = []
         for attachment in raw_refs:
@@ -1781,7 +1522,7 @@ async def generate(
     else:
         if any(r is not None for r in [ref1, ref2, ref3, ref4, ref5, ref6, ref7, ref8, ref9]):
             await interaction.response.send_message(
-                "⚠️ Reference images only work with **Nano Banana Pro**, **Nano Banana 2**, or **Wan 2.6**.",
+                "⚠️ Reference images only work with **Nano Banana 2** or **Wan 2.6**.",
                 ephemeral=True,
             )
             return
@@ -1798,7 +1539,7 @@ async def generate(
         try:
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
-                None, run_generation, prompt, size_value, model_value, ref_images
+                None, run_generation, actual_prompt, size_value, model_value, ref_images
             )
             generation_result["data"] = result
         except Exception as exc:
@@ -1842,15 +1583,19 @@ async def generate(
     download_url = result.get("download_url") or result.get("url")
     if download_url:
         try:
+            # Use the custom session that ignores SSL verification
             response = download_session.get(download_url, timeout=60)
             response.raise_for_status()
             media_bytes = response.content
             
-            is_image = model_value not in VIDEO_MODELS or model_value == "nanobanana_2" or model_value == "nanobanana_pro"
+            # Determine if it's an image or video
+            is_image = model_value not in VIDEO_MODELS or model_value == "nanobanana_2"
             ext = "png" if is_image else "mp4"
             filename = f"generated_media.{ext}"
             
+            # For videos, check file size (Discord has 25MB limit for attachments)
             if not is_image and len(media_bytes) > 25 * 1024 * 1024:
+                # Video too large for Discord, just provide download link
                 success_embed.add_field(
                     name="📥 Download",
                     value=f"[Click to download video]({download_url})",
@@ -1904,9 +1649,22 @@ async def sizes_cmd(interaction: discord.Interaction):
         description="Use these with `/generate` to pick your resolution.",
         color=INFO_COLOR,
     )
-    embed.add_field(name="⬛ Square", value="`1080x1080` (1:1)", inline=False)
-    embed.add_field(name="🌅 Landscape", value="`1280x720` (16:9)", inline=False)
-    embed.add_field(name="📱 Portrait", value="`720x1280` (9:16)", inline=False)
+    landscape, portrait, square = [], [], []
+    for size in VIDEO_SIZES:
+        w, h = map(int, size.split("x"))
+        entry = f"`{size}`"
+        if w == h:
+            square.append(entry)
+        elif w > h:
+            landscape.append(entry)
+        else:
+            portrait.append(entry)
+    if landscape:
+        embed.add_field(name="🌅 Landscape", value="\n".join(landscape), inline=False)
+    if portrait:
+        embed.add_field(name="📱 Portrait", value="\n".join(portrait), inline=False)
+    if square:
+        embed.add_field(name="⬛ Square", value="\n".join(square), inline=False)
     await interaction.response.send_message(embed=embed)
 
 @discord.app_commands.allowed_installs(guilds=True, users=True)
@@ -1920,7 +1678,7 @@ async def models_cmd(interaction: discord.Interaction):
     embed.add_field(
         name="Image models",
         value=(
-            "`Nano Banana Pro` — fast AI image generation with up to 9 reference images\n"
+            "`Nano Banana Pro` — fast AI image generation\n"
             "`Nano Banana 2` — image generation with up to 9 reference images"
         ),
         inline=False,
@@ -1941,13 +1699,16 @@ async def models_cmd(interaction: discord.Interaction):
 # ─── تشغيل البوت ────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    # تشغيل خادم الويب أولاً
     keep_alive()
     
+    # التحقق من وجود التوكن
     TOKEN = os.environ.get("DISCORD_BOT_TOKEN")
     if not TOKEN:
         print("❌ ERROR: DISCORD_BOT_TOKEN environment variable not set!")
         exit(1)
     
+    # تشغيل البوت
     print("🚀 Starting Discord Bot on Render...")
     print("📡 Bot will run 24/7!")
     client.run(TOKEN)
