@@ -97,7 +97,7 @@ def keep_alive():
     t.start()
 
 # ============================================================
-# LUNO STUDIO HELPER FUNCTIONS (Nano Banana Pro)
+# LUNO STUDIO HELPER FUNCTIONS (Nano Banana Pro with Reference Images)
 # ============================================================
 
 def generate_code_challenge():
@@ -236,8 +236,19 @@ def create_luno_project(cookie_value, project_id, timestamp):
         print(f"[!] Failed: {response.text}")
         return None
 
-def generate_luno_image(cookie_value, project_id, prompt):
-    """Generate AI image with Luno Studio"""
+def upload_image_to_cdn(image_bytes: bytes, filename: str) -> str:
+    """Upload image to a temporary CDN and return URL (using imgbb or similar)"""
+    # For now, we'll use a data URL as fallback
+    # In production, you'd upload to a CDN like imgbb, cloudinary, etc.
+    import base64
+    ext = filename.split('.')[-1].lower()
+    mime_type = f"image/{'jpeg' if ext == 'jpg' else ext}"
+    img_base64 = base64.b64encode(image_bytes).decode()
+    data_url = f"data:{mime_type};base64,{img_base64}"
+    return data_url
+
+def generate_luno_image(cookie_value, project_id, prompt, ref_images):
+    """Generate AI image with Luno Studio using reference images"""
     url = "https://www.lunostudio.ai/api/generate"
     
     headers = {
@@ -250,11 +261,18 @@ def generate_luno_image(cookie_value, project_id, prompt):
         "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
     }
     
+    # Convert reference images to URLs (data URLs or CDN URLs)
+    image_inputs = []
+    for img_bytes, filename, ext in ref_images:
+        # Upload to CDN or use data URL
+        img_url = upload_image_to_cdn(img_bytes, filename)
+        image_inputs.append(img_url)
+    
     payload = {
         "prompt": prompt,
         "aspectRatio": "1:1",
         "model": "google/nano-banana-pro",
-        "imageInput": [],
+        "imageInput": image_inputs if image_inputs else [],
         "duration": 4,
         "generateAudio": True,
         "resolution": "1K",
@@ -263,7 +281,8 @@ def generate_luno_image(cookie_value, project_id, prompt):
         }
     }
     
-    print(f"\n[*] Generating image with prompt: {prompt}...")
+    print(f"\n[*] Generating image with prompt: {prompt}")
+    print(f"[*] Reference images: {len(image_inputs)}")
     response = requests.post(url, headers=headers, json=payload)
     print(f"[*] Generate response: {response.status_code}")
     
@@ -273,8 +292,8 @@ def generate_luno_image(cookie_value, project_id, prompt):
         print(f"[!] Failed: {response.text}")
         return None
 
-def run_luno_generation(prompt: str, size: str) -> dict:
-    """Generate image using Luno Studio (Nano Banana Pro)"""
+def run_luno_generation(prompt: str, size: str, ref_images: list = None) -> dict:
+    """Generate image using Luno Studio (Nano Banana Pro) with reference images"""
     
     # Step 1: Generate temporary email
     emailnator, email = get_temp_email()
@@ -309,8 +328,8 @@ def run_luno_generation(prompt: str, size: str) -> dict:
     if not project_result:
         raise RuntimeError("Project creation failed")
     
-    # Step 6: Generate image
-    generation_result = generate_luno_image(cookie_value, project_id, prompt)
+    # Step 6: Generate image with reference images
+    generation_result = generate_luno_image(cookie_value, project_id, prompt, ref_images or [])
     
     if generation_result and 'output' in generation_result and len(generation_result['output']) > 0:
         image_url = generation_result['output'][0]
@@ -1438,7 +1457,7 @@ def run_seedance2_generation(prompt: str) -> dict:
 
 def run_generation(prompt: str, size: str, model: str, ref_images: list = None) -> dict:
     if model == "nanobanana_pro":
-        return run_luno_generation(prompt, size)
+        return run_luno_generation(prompt, size, ref_images or [])
     if model == "nanobanana_2":
         return run_oreate_generation(prompt, size, ref_images or [])
     if model == "seedance_2":
@@ -1633,7 +1652,7 @@ async def on_ready():
     prompt="What the media should show",
     model="AI model to use (default: Nano Banana Pro)",
     size="Resolution",
-    ref1="Reference image 1 (Nano Banana 2 / Wan 2.6 only)",
+    ref1="Reference image 1 (Nano Banana Pro / Nano Banana 2 / Wan 2.6)",
     ref2="Reference image 2",
     ref3="Reference image 3",
     ref4="Reference image 4",
@@ -1684,7 +1703,8 @@ async def generate(
         size_label = SIZE_LABELS.get(size_value, size_value)
 
     ref_images = []
-    if model_value in ["nanobanana_2", "wan_2_6"]:
+    # Allow reference images for Nano Banana Pro, Nano Banana 2, and Wan 2.6
+    if model_value in ["nanobanana_pro", "nanobanana_2", "wan_2_6"]:
         raw_refs = [ref1, ref2, ref3, ref4, ref5, ref6, ref7, ref8, ref9]
         bad_refs = []
         for attachment in raw_refs:
@@ -1715,7 +1735,7 @@ async def generate(
     else:
         if any(r is not None for r in [ref1, ref2, ref3, ref4, ref5, ref6, ref7, ref8, ref9]):
             await interaction.response.send_message(
-                "⚠️ Reference images only work with **Nano Banana 2** or **Wan 2.6**.",
+                "⚠️ Reference images only work with **Nano Banana Pro**, **Nano Banana 2**, or **Wan 2.6**.",
                 ephemeral=True,
             )
             return
@@ -1780,7 +1800,7 @@ async def generate(
             response.raise_for_status()
             media_bytes = response.content
             
-            is_image = model_value not in VIDEO_MODELS or model_value == "nanobanana_2"
+            is_image = model_value not in VIDEO_MODELS or model_value == "nanobanana_2" or model_value == "nanobanana_pro"
             ext = "png" if is_image else "mp4"
             filename = f"generated_media.{ext}"
             
@@ -1854,7 +1874,7 @@ async def models_cmd(interaction: discord.Interaction):
     embed.add_field(
         name="Image models",
         value=(
-            "`Nano Banana Pro` — fast AI image generation via Luno Studio\n"
+            "`Nano Banana Pro` — fast AI image generation with up to 9 reference images\n"
             "`Nano Banana 2` — image generation with up to 9 reference images"
         ),
         inline=False,
