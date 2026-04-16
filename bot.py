@@ -267,7 +267,7 @@ def luno_generate_image(cookie_value, project_id, prompt, aspect_ratio="1:1", im
     payload = {
         "prompt": prompt,
         "aspectRatio": aspect_ratio,
-        "model": "google/nano-banana-2",
+        "model": "google/nano-banana-pro",
         "imageInput": image_urls if image_urls else [],
         "duration": 4,
         "generateAudio": True,
