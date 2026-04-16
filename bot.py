@@ -97,7 +97,7 @@ def keep_alive():
     t.start()
 
 # ============================================================
-# LUNO STUDIO HELPER FUNCTIONS (Nano Banana Pro)
+# LUNO STUDIO HELPER FUNCTIONS (Nano Banana Pro - EXACT MATCH)
 # ============================================================
 
 def generate_code_challenge():
@@ -150,7 +150,7 @@ def wait_for_verification_code(emailnator, email, timeout=120):
     
     raise Exception("Timeout: No verification code received")
 
-def luno_signup(email, password, code_challenge):
+def signup(email, password, code_challenge):
     url = f"{SUPABASE_URL}/auth/v1/signup"
     payload = {
         "email": email,
@@ -171,7 +171,7 @@ def luno_signup(email, password, code_challenge):
     
     return response.json()
 
-def luno_verify_email(email, verification_code):
+def verify_email(email, verification_code):
     url = f"{SUPABASE_URL}/auth/v1/verify"
     payload = {
         "email": email,
@@ -205,8 +205,8 @@ def create_cookie_value(verify_result):
     base64_encoded = base64.b64encode(json_str.encode()).decode()
     return f"base64-{base64_encoded}"
 
-def create_luno_project(cookie_value, project_id, timestamp):
-    """Create a new project with the cookie"""
+def create_project(cookie_value, project_id, timestamp):
+    """Create a new project with the cookie - EXACT match to working code"""
     url = "https://www.lunostudio.ai/api/projects"
     
     headers = {
@@ -236,17 +236,8 @@ def create_luno_project(cookie_value, project_id, timestamp):
         print(f"[!] Failed: {response.text}")
         return None
 
-def upload_image_to_data_url(image_bytes: bytes, filename: str) -> str:
-    """Convert image to data URL for Luno Studio"""
-    import base64
-    ext = filename.split('.')[-1].lower()
-    mime_type = f"image/{'jpeg' if ext == 'jpg' else ext}"
-    img_base64 = base64.b64encode(image_bytes).decode()
-    data_url = f"data:{mime_type};base64,{img_base64}"
-    return data_url
-
-def generate_luno_image(cookie_value, project_id, prompt, ref_images):
-    """Generate AI image with Luno Studio using reference images"""
+def generate_image(cookie_value, project_id, prompt, ref_images):
+    """Generate AI image with the cookie - EXACT match to working code"""
     url = "https://www.lunostudio.ai/api/generate"
     
     headers = {
@@ -262,8 +253,11 @@ def generate_luno_image(cookie_value, project_id, prompt, ref_images):
     # Convert reference images to data URLs
     image_inputs = []
     for img_bytes, filename, ext in ref_images:
-        img_url = upload_image_to_data_url(img_bytes, filename)
-        image_inputs.append(img_url)
+        import base64
+        mime_type = f"image/{'jpeg' if ext == 'jpg' else ext}"
+        img_base64 = base64.b64encode(img_bytes).decode()
+        data_url = f"data:{mime_type};base64,{img_base64}"
+        image_inputs.append(data_url)
     
     payload = {
         "prompt": prompt,
@@ -280,22 +274,17 @@ def generate_luno_image(cookie_value, project_id, prompt, ref_images):
     
     print(f"\n[*] Generating image with prompt: {prompt}")
     print(f"[*] Reference images: {len(image_inputs)}")
-    
-    # Make the request with a longer timeout
     response = requests.post(url, headers=headers, json=payload, timeout=180)
     print(f"[*] Generate response: {response.status_code}")
     
     if response.status_code == 200:
-        result = response.json()
-        if result and 'output' in result and len(result['output']) > 0:
-            return result
-        else:
-            raise Exception("No output in response")
+        return response.json()
     else:
-        raise Exception(f"Generation failed with status {response.status_code}: {response.text}")
+        print(f"[!] Failed: {response.text}")
+        return None
 
 def run_luno_generation(prompt: str, size: str, ref_images: list = None) -> dict:
-    """Generate image using Luno Studio (Nano Banana Pro) with reference images"""
+    """Generate image using Luno Studio - EXACT match to working code flow"""
     
     # Step 1: Generate temporary email
     emailnator, email = get_temp_email()
@@ -304,32 +293,36 @@ def run_luno_generation(prompt: str, size: str, ref_images: list = None) -> dict
     code_challenge, code_verifier = generate_code_challenge()
     
     # Step 2: Sign up
-    signup_result = luno_signup(email, password, code_challenge)
+    signup_result = signup(email, password, code_challenge)
     
     if not signup_result or 'id' not in signup_result:
         raise RuntimeError("Signup failed")
+    
+    user_id = signup_result['id']
     
     # Step 3: Get verification code
     verification_code = wait_for_verification_code(emailnator, email)
     
     # Step 4: Verify email
-    verify_result = luno_verify_email(email, verification_code)
+    verify_result = verify_email(email, verification_code)
     
     if not verify_result or 'access_token' not in verify_result:
         raise RuntimeError("Verification failed")
     
-    # Step 5: Create cookie and project
+    # Step 5: Create cookie value
     cookie_value = create_cookie_value(verify_result)
+    
+    # Step 6: Create project
     timestamp = int(time.time() * 1000)
     project_id = f"proj-{timestamp}-{secrets.token_urlsafe(5).replace('-', '')}"
     
-    project_result = create_luno_project(cookie_value, project_id, timestamp)
+    project_result = create_project(cookie_value, project_id, timestamp)
     
     if not project_result:
         raise RuntimeError("Project creation failed")
     
-    # Step 6: Generate image with reference images
-    generation_result = generate_luno_image(cookie_value, project_id, prompt, ref_images or [])
+    # Step 7: Generate image
+    generation_result = generate_image(cookie_value, project_id, prompt, ref_images or [])
     
     if generation_result and 'output' in generation_result and len(generation_result['output']) > 0:
         image_url = generation_result['output'][0]
@@ -1510,10 +1503,9 @@ PROGRESS_STAGES = [
     {"threshold": 0,   "label": "Initializing",         "emoji": "⚙️"},
     {"threshold": 5,   "label": "Creating account",     "emoji": "📧"},
     {"threshold": 15,  "label": "Verifying email",      "emoji": "✉️"},
-    {"threshold": 30,  "label": "Setting up workspace", "emoji": "🛠️"},
-    {"threshold": 65,  "label": "Generating media",     "emoji": "🎨"},
-    {"threshold": 120, "label": "Rendering",            "emoji": "🎬"},
-    {"threshold": 300, "label": "Finalizing",           "emoji": "✨"},
+    {"threshold": 30,  "label": "Creating project",     "emoji": "📁"},
+    {"threshold": 45,  "label": "Generating image",     "emoji": "🎨"},
+    {"threshold": 90,  "label": "Finalizing",           "emoji": "✨"},
 ]
 
 NB2_PROGRESS_STAGES = [
@@ -1561,7 +1553,7 @@ def build_progress_embed(prompt, size_label, elapsed, model_label, model_value="
         estimated_total = 120
     else:
         stages = PROGRESS_STAGES
-        estimated_total = 180
+        estimated_total = 120
 
     stage = get_stage(elapsed, stages)
 
