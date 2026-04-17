@@ -23,6 +23,7 @@ from urllib3.poolmanager import PoolManager
 import secrets
 import hashlib
 from emailnator import Emailnator
+import traceback
 
 # Custom adapter to ignore SSL verification
 class SSLAdapter(HTTPAdapter):
@@ -98,55 +99,82 @@ LUNO_HEADERS = {
     "x-supabase-api-version": "2024-01-01"
 }
 
-# ─── LUNO STUDIO HELPER FUNCTIONS ─────────────────────────────────────────────
+# ─── LUNO STUDIO HELPER FUNCTIONS WITH DEBUG LOGGING ─────────────────────────────
 def luno_generate_code_challenge():
-    code_verifier = secrets.token_urlsafe(32)
-    code_challenge = _base64.urlsafe_b64encode(
-        hashlib.sha256(code_verifier.encode()).digest()
-    ).decode().replace('=', '')
-    return code_challenge, code_verifier
+    try:
+        print("[DEBUG] Generating code challenge...")
+        code_verifier = secrets.token_urlsafe(32)
+        code_challenge = _base64.urlsafe_b64encode(
+            hashlib.sha256(code_verifier.encode()).digest()
+        ).decode().replace('=', '')
+        print(f"[DEBUG] Code challenge generated: {code_challenge[:20]}...")
+        return code_challenge, code_verifier
+    except Exception as e:
+        print(f"[ERROR] Failed to generate code challenge: {e}")
+        traceback.print_exc()
+        raise
 
 def luno_get_temp_email():
-    emailnator = Emailnator()
-    email_data = emailnator.generate_email()
-    email = email_data["email"][0]
-    print(f"[+] Generated Luno email: {email}")
-    return emailnator, email
+    try:
+        print("[DEBUG] Generating temporary email via Emailnator...")
+        emailnator = Emailnator()
+        email_data = emailnator.generate_email()
+        print(f"[DEBUG] Emailnator response: {email_data}")
+        email = email_data["email"][0]
+        print(f"[DEBUG] Generated Luno email: {email}")
+        return emailnator, email
+    except Exception as e:
+        print(f"[ERROR] Failed to generate temp email: {e}")
+        traceback.print_exc()
+        raise
 
 def luno_wait_for_verification_code(emailnator, email, timeout=120):
-    print("\n[*] Waiting for verification code from Luno...")
+    print(f"\n[DEBUG] Waiting for verification code from Luno for email: {email}")
     start_time = time.time()
     seen_messages = set()
     
     while time.time() - start_time < timeout:
         try:
+            print(f"[DEBUG] Checking inbox (attempt {int((time.time() - start_time)/0.5)+1})...")
             inbox_result = emailnator.inbox(email)
+            print(f"[DEBUG] Inbox result: {inbox_result}")
+            
             messages = []
             if isinstance(inbox_result, dict) and "messageData" in inbox_result:
                 messages = inbox_result["messageData"]
+                print(f"[DEBUG] Found {len(messages)} messages")
             
             for msg in messages:
                 msg_id = str(msg)
                 if msg_id in seen_messages:
+                    print(f"[DEBUG] Skipping already seen message: {msg_id}")
                     continue
                 seen_messages.add(msg_id)
+                print(f"[DEBUG] Processing new message: {msg_id}")
                 
                 try:
                     full_message = emailnator.get_message(email, msg if isinstance(msg, str) else msg.get('messageID', ''))
                     message_str = str(full_message)
+                    print(f"[DEBUG] Message content preview: {message_str[:200]}...")
                     
                     if 'luno' in message_str.lower() or 'confirm your signup' in message_str.lower():
                         code_match = re.search(r'\b(\d{6})\b', message_str)
                         if code_match:
                             code = code_match.group(1)
-                            print(f"✅ Luno VERIFICATION CODE: {code}")
+                            print(f"[DEBUG] Found verification code: {code}")
                             return code
-                except:
-                    pass
-        except:
-            pass
+                        else:
+                            print(f"[DEBUG] No 6-digit code found in Luno email")
+                    else:
+                        print(f"[DEBUG] Message not from Luno")
+                except Exception as e:
+                    print(f"[DEBUG] Error reading message: {e}")
+        except Exception as e:
+            print(f"[DEBUG] Error checking inbox: {e}")
+        
         time.sleep(0.5)
     
+    print(f"[ERROR] Timeout: No verification code received from Luno after {timeout}s")
     raise Exception("Timeout: No verification code received from Luno")
 
 def luno_signup(email, password, code_challenge):
@@ -160,15 +188,24 @@ def luno_signup(email, password, code_challenge):
         "code_challenge_method": "s256"
     }
     
-    print(f"\n[*] Sending Luno signup request...")
-    response = requests.post(url, headers=LUNO_HEADERS, json=payload)
-    print(f"[*] Luno signup response: {response.status_code}")
+    print(f"\n[DEBUG] Sending Luno signup request to: {url}")
+    print(f"[DEBUG] Payload: {_json.dumps(payload, indent=2)}")
     
-    if response.status_code != 200:
-        print(f"[!] Error: {response.text}")
+    try:
+        response = requests.post(url, headers=LUNO_HEADERS, json=payload, timeout=30)
+        print(f"[DEBUG] Luno signup response status: {response.status_code}")
+        print(f"[DEBUG] Luno signup response headers: {dict(response.headers)}")
+        print(f"[DEBUG] Luno signup response body: {response.text[:500]}")
+        
+        if response.status_code != 200:
+            print(f"[ERROR] Luno signup failed with status {response.status_code}")
+            return None
+        
+        return response.json()
+    except Exception as e:
+        print(f"[ERROR] Exception during Luno signup: {e}")
+        traceback.print_exc()
         return None
-    
-    return response.json()
 
 def luno_verify_email(email, verification_code):
     url = f"{LUNO_SUPABASE_URL}/auth/v1/verify"
@@ -179,33 +216,49 @@ def luno_verify_email(email, verification_code):
         "gotrue_meta_security": {}
     }
     
-    print(f"\n[*] Verifying Luno email with code: {verification_code}")
-    response = requests.post(url, headers=LUNO_HEADERS, json=payload)
-    print(f"[*] Luno verify response: {response.status_code}")
+    print(f"\n[DEBUG] Sending Luno verification request to: {url}")
+    print(f"[DEBUG] Verification code: {verification_code}")
     
-    if response.status_code != 200:
-        print(f"[!] Error: {response.text}")
+    try:
+        response = requests.post(url, headers=LUNO_HEADERS, json=payload, timeout=30)
+        print(f"[DEBUG] Luno verify response status: {response.status_code}")
+        print(f"[DEBUG] Luno verify response body: {response.text[:500]}")
+        
+        if response.status_code != 200:
+            print(f"[ERROR] Luno verification failed with status {response.status_code}")
+            return None
+        
+        return response.json()
+    except Exception as e:
+        print(f"[ERROR] Exception during Luno verification: {e}")
+        traceback.print_exc()
         return None
-    
-    return response.json()
 
 def luno_create_cookie_value(verify_result):
-    """Create the exact cookie value format from the verify result"""
-    cookie_data = {
-        "access_token": verify_result['access_token'],
-        "token_type": verify_result.get('token_type', 'bearer'),
-        "expires_in": verify_result.get('expires_in', 3600),
-        "expires_at": verify_result.get('expires_at'),
-        "refresh_token": verify_result.get('refresh_token'),
-        "user": verify_result.get('user')
-    }
-    
-    json_str = _json.dumps(cookie_data)
-    base64_encoded = _base64.b64encode(json_str.encode()).decode()
-    return f"base64-{base64_encoded}"
+    try:
+        print(f"[DEBUG] Creating cookie value from verify result...")
+        print(f"[DEBUG] Verify result keys: {verify_result.keys() if verify_result else 'None'}")
+        
+        cookie_data = {
+            "access_token": verify_result['access_token'],
+            "token_type": verify_result.get('token_type', 'bearer'),
+            "expires_in": verify_result.get('expires_in', 3600),
+            "expires_at": verify_result.get('expires_at'),
+            "refresh_token": verify_result.get('refresh_token'),
+            "user": verify_result.get('user')
+        }
+        
+        json_str = _json.dumps(cookie_data)
+        base64_encoded = _base64.b64encode(json_str.encode()).decode()
+        result = f"base64-{base64_encoded}"
+        print(f"[DEBUG] Cookie value created (length: {len(result)})")
+        return result
+    except Exception as e:
+        print(f"[ERROR] Failed to create cookie value: {e}")
+        traceback.print_exc()
+        raise
 
 def luno_create_project(cookie_value, project_id, timestamp):
-    """Create a new project with the cookie"""
     url = "https://www.lunostudio.ai/api/projects"
     
     headers = {
@@ -225,18 +278,27 @@ def luno_create_project(cookie_value, project_id, timestamp):
         "updatedAt": timestamp
     }
     
-    response = requests.post(url, headers=headers, json=payload)
-    print(f"[*] Luno create project response: {response.status_code}")
+    print(f"\n[DEBUG] Creating Luno project...")
+    print(f"[DEBUG] URL: {url}")
+    print(f"[DEBUG] Project ID: {project_id}")
     
-    if response.status_code == 200:
-        print(f"[+] Luno project created successfully!")
-        return response.json()
-    else:
-        print(f"[!] Failed: {response.text}")
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=30)
+        print(f"[DEBUG] Luno create project response status: {response.status_code}")
+        print(f"[DEBUG] Luno create project response body: {response.text[:500]}")
+        
+        if response.status_code == 200:
+            print(f"[DEBUG] Luno project created successfully!")
+            return response.json()
+        else:
+            print(f"[ERROR] Luno project creation failed with status {response.status_code}")
+            return None
+    except Exception as e:
+        print(f"[ERROR] Exception during Luno project creation: {e}")
+        traceback.print_exc()
         return None
 
 def luno_generate_image(cookie_value, project_id, prompt, ref_image_urls=None):
-    """Generate AI image with Luno Studio (Nano Banana Pro)"""
     url = "https://www.lunostudio.ai/api/generate"
     
     headers = {
@@ -255,8 +317,8 @@ def luno_generate_image(cookie_value, project_id, prompt, ref_image_urls=None):
     payload = {
         "prompt": prompt,
         "aspectRatio": "1:1",
-        "model": "google/nano-banana-pro",  # Changed from -2 to -pro
-        "imageInput": image_input,  # Empty list if no reference images
+        "model": "google/nano-banana-pro",
+        "imageInput": image_input,
         "duration": 4,
         "generateAudio": True,
         "resolution": "1K",
@@ -265,102 +327,161 @@ def luno_generate_image(cookie_value, project_id, prompt, ref_image_urls=None):
         }
     }
     
-    print(f"\n[*] Generating image with Luno Studio...")
-    print(f"[*] Prompt: {prompt}")
-    print(f"[*] Reference images: {len(image_input)}")
-    response = requests.post(url, headers=headers, json=payload)
-    print(f"[*] Luno generate response: {response.status_code}")
+    print(f"\n[DEBUG] Generating image with Luno Studio...")
+    print(f"[DEBUG] URL: {url}")
+    print(f"[DEBUG] Prompt: {prompt}")
+    print(f"[DEBUG] Reference images count: {len(image_input)}")
+    print(f"[DEBUG] Payload: {_json.dumps(payload, indent=2)[:500]}")
     
-    if response.status_code == 200:
-        return response.json()
-    else:
-        print(f"[!] Failed: {response.text}")
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=120)
+        print(f"[DEBUG] Luno generate response status: {response.status_code}")
+        print(f"[DEBUG] Luno generate response headers: {dict(response.headers)}")
+        print(f"[DEBUG] Luno generate response body: {response.text[:1000]}")
+        
+        if response.status_code == 200:
+            result = response.json()
+            print(f"[DEBUG] Generation successful: {result}")
+            return result
+        else:
+            print(f"[ERROR] Luno generation failed with status {response.status_code}")
+            print(f"[ERROR] Response: {response.text}")
+            return None
+    except Exception as e:
+        print(f"[ERROR] Exception during Luno generation: {e}")
+        traceback.print_exc()
         return None
 
 def run_luno_nanobanana_generation(prompt: str, ref_images: list = None) -> dict:
-    """Run Luno Studio Nano Banana Pro generation"""
+    """Run Luno Studio Nano Banana Pro generation with full debug logging"""
     
-    # Step 1: Generate temporary email
-    print("\n[Luno] Step 1: Generating temporary email...")
-    emailnator, email = luno_get_temp_email()
+    print("\n" + "="*70)
+    print("LUNO NANO BANANA PRO GENERATION STARTED")
+    print("="*70)
+    print(f"[DEBUG] Prompt: {prompt}")
+    print(f"[DEBUG] Reference images provided: {len(ref_images) if ref_images else 0}")
     
-    password = secrets.token_urlsafe(12)
-    code_challenge, code_verifier = luno_generate_code_challenge()
-    print(f"[Luno] Password: {password}")
-    
-    # Step 2: Sign up
-    print("\n[Luno] Step 2: Creating account...")
-    signup_result = luno_signup(email, password, code_challenge)
-    
-    if not signup_result or 'id' not in signup_result:
-        raise RuntimeError("Luno signup failed")
-    
-    user_id = signup_result['id']
-    print(f"[Luno] User ID: {user_id}")
-    
-    # Step 3: Get verification code
-    print("\n[Luno] Step 3: Getting verification code...")
     try:
-        verification_code = luno_wait_for_verification_code(emailnator, email)
+        # Step 1: Generate temporary email
+        print("\n[Luno Step 1] Generating temporary email...")
+        emailnator, email = luno_get_temp_email()
+        
+        password = secrets.token_urlsafe(12)
+        code_challenge, code_verifier = luno_generate_code_challenge()
+        print(f"[Luno] Email: {email}")
+        print(f"[Luno] Password: {password}")
+        print(f"[Luno] Code challenge: {code_challenge[:30]}...")
+        
+        # Step 2: Sign up
+        print("\n[Luno Step 2] Creating account...")
+        signup_result = luno_signup(email, password, code_challenge)
+        
+        if not signup_result:
+            raise RuntimeError("Luno signup failed - no response received")
+        
+        if 'id' not in signup_result:
+            print(f"[ERROR] Signup result missing 'id' field: {signup_result}")
+            raise RuntimeError(f"Luno signup failed - invalid response: {signup_result}")
+        
+        user_id = signup_result['id']
+        print(f"[Luno] User ID: {user_id}")
+        
+        # Step 3: Get verification code
+        print("\n[Luno Step 3] Getting verification code...")
+        try:
+            verification_code = luno_wait_for_verification_code(emailnator, email)
+            print(f"[Luno] Got verification code: {verification_code}")
+        except Exception as e:
+            print(f"[ERROR] Failed to get verification code: {e}")
+            raise RuntimeError(f"Luno verification code retrieval failed: {e}")
+        
+        # Step 4: Verify email
+        print("\n[Luno Step 4] Verifying email...")
+        verify_result = luno_verify_email(email, verification_code)
+        
+        if not verify_result:
+            raise RuntimeError("Luno verification failed - no response received")
+        
+        if 'access_token' not in verify_result:
+            print(f"[ERROR] Verify result missing 'access_token': {verify_result}")
+            raise RuntimeError(f"Luno verification failed - invalid response: {verify_result}")
+        
+        print(f"[Luno] Email verified successfully!")
+        print(f"[DEBUG] Access token received (length: {len(verify_result['access_token'])})")
+        
+        # Create the cookie value from the verify result
+        cookie_value = luno_create_cookie_value(verify_result)
+        print(f"[Luno] Cookie created (length: {len(cookie_value)})")
+        
+        # Step 5: Create project
+        print("\n[Luno Step 5] Creating project...")
+        timestamp = int(time.time() * 1000)
+        project_id = f"proj-{timestamp}-{secrets.token_urlsafe(5).replace('-', '')}"
+        print(f"[Luno] Project ID: {project_id}")
+        
+        project_result = luno_create_project(cookie_value, project_id, timestamp)
+        
+        if not project_result:
+            raise RuntimeError("Luno project creation failed - no response received")
+        
+        print(f"[Luno] Project created successfully!")
+        
+        # Step 6: Upload reference images if any (for Luno, we need URLs)
+        ref_urls = []
+        if ref_images:
+            print(f"\n[Luno Step 6] Processing {len(ref_images)} reference images...")
+            for idx, (image_bytes, filename, ext) in enumerate(ref_images[:5]):  # Luno limit 5 images
+                try:
+                    print(f"[DEBUG] Processing reference image {idx+1}: {filename} ({len(image_bytes)} bytes)")
+                    # Convert image to base64 data URI
+                    mime_type = f"image/{'jpeg' if ext == 'jpg' else ext}"
+                    b64_data = _base64.b64encode(image_bytes).decode()
+                    data_uri = f"data:{mime_type};base64,{b64_data}"
+                    ref_urls.append(data_uri)
+                    print(f"[Luno] Reference image {idx+1} converted to data URI (length: {len(data_uri)} chars)")
+                except Exception as e:
+                    print(f"[ERROR] Failed to process ref {idx+1}: {e}")
+                    traceback.print_exc()
+        else:
+            print("\n[Luno Step 6] No reference images to process")
+        
+        # Step 7: Generate image
+        print("\n[Luno Step 7] Generating AI image...")
+        generation_result = luno_generate_image(cookie_value, project_id, prompt, ref_urls if ref_urls else None)
+        
+        if not generation_result:
+            raise RuntimeError("Luno image generation failed - no response received")
+        
+        if 'output' not in generation_result:
+            print(f"[ERROR] Generation result missing 'output' field: {generation_result}")
+            raise RuntimeError(f"Luno image generation failed - invalid response: {generation_result}")
+        
+        if not generation_result['output']:
+            print(f"[ERROR] Generation result 'output' is empty: {generation_result}")
+            raise RuntimeError("Luno image generation failed - no output URL")
+        
+        image_url = generation_result['output'][0]
+        print(f"\n[Luno SUCCESS] Image generated: {image_url}")
+        
+        print("="*70)
+        print("LUNO GENERATION COMPLETED SUCCESSFULLY")
+        print("="*70)
+        
+        return {
+            "url": image_url,
+            "download_url": image_url,
+            "is_nanobanana_pro_alt": True,
+            "email": email,
+            "password": password,
+        }
+        
     except Exception as e:
-        raise RuntimeError(f"Luno verification failed: {e}")
-    
-    # Step 4: Verify email
-    print("\n[Luno] Step 4: Verifying email...")
-    verify_result = luno_verify_email(email, verification_code)
-    
-    if not verify_result or 'access_token' not in verify_result:
-        raise RuntimeError("Luno verification failed")
-    
-    print(f"[Luno] Email verified!")
-    
-    # Create the cookie value from the verify result
-    cookie_value = luno_create_cookie_value(verify_result)
-    print(f"[Luno] Cookie created")
-    
-    # Step 5: Create project
-    print("\n[Luno] Step 5: Creating project...")
-    timestamp = int(time.time() * 1000)
-    project_id = f"proj-{timestamp}-{secrets.token_urlsafe(5).replace('-', '')}"
-    
-    project_result = luno_create_project(cookie_value, project_id, timestamp)
-    
-    if not project_result:
-        raise RuntimeError("Luno project creation failed")
-    
-    print(f"[Luno] Project ID: {project_id}")
-    
-    # Step 6: Upload reference images if any (for Luno, we need URLs)
-    ref_urls = []
-    if ref_images:
-        for idx, (image_bytes, filename, ext) in enumerate(ref_images[:5]):  # Luno limit 5 images
-            try:
-                print(f"[Luno] Processing reference image {idx+1}: {filename}")
-                # Convert image to base64 data URI
-                mime_type = f"image/{'jpeg' if ext == 'jpg' else ext}"
-                data_uri = f"data:{mime_type};base64,{_base64.b64encode(image_bytes).decode()}"
-                ref_urls.append(data_uri)
-                print(f"[Luno] Reference image {idx+1} converted to data URI")
-            except Exception as e:
-                print(f"[Luno] Failed to process ref {idx+1}: {e}")
-    
-    # Step 7: Generate image
-    print("\n[Luno] Step 7: Generating AI image...")
-    generation_result = luno_generate_image(cookie_value, project_id, prompt, ref_urls if ref_urls else None)
-    
-    if not generation_result or 'output' not in generation_result or not generation_result['output']:
-        raise RuntimeError("Luno image generation failed - no output URL")
-    
-    image_url = generation_result['output'][0]
-    print(f"[Luno] Image generated: {image_url}")
-    
-    return {
-        "url": image_url,
-        "download_url": image_url,
-        "is_nanobanana_pro_alt": True,
-        "email": email,
-        "password": password,
-    }
+        print(f"\n[Luno FATAL ERROR] {type(e).__name__}: {e}")
+        traceback.print_exc()
+        print("="*70)
+        print("LUNO GENERATION FAILED")
+        print("="*70)
+        raise
 
 # ─── Temp email ──────────────────────────────────────────────────────────────
 
@@ -1455,7 +1576,7 @@ def _buzzy_create_video_project(token, prompt, aspect_ratio):
             'instructionSegments': [{'type': 'text', 'content': prompt}],
             'imageUrls': [],
             'duration': 10,
-            'aspectRatio': aspect_ratio,  # Now dynamic: "16:9" or "9:16"
+            'aspectRatio': aspect_ratio,
             'prompt': prompt
         },
         headers={
