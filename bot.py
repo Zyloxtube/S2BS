@@ -101,7 +101,7 @@ LUNO_HEADERS = {
 # ─── LUNO STUDIO HELPER FUNCTIONS ─────────────────────────────────────────────
 def luno_generate_code_challenge():
     code_verifier = secrets.token_urlsafe(32)
-    code_challenge = base64.urlsafe_b64encode(
+    code_challenge = _base64.urlsafe_b64encode(
         hashlib.sha256(code_verifier.encode()).digest()
     ).decode().replace('=', '')
     return code_challenge, code_verifier
@@ -201,7 +201,7 @@ def luno_create_cookie_value(verify_result):
     }
     
     json_str = _json.dumps(cookie_data)
-    base64_encoded = base64.b64encode(json_str.encode()).decode()
+    base64_encoded = _base64.b64encode(json_str.encode()).decode()
     return f"base64-{base64_encoded}"
 
 def luno_create_project(cookie_value, project_id, timestamp):
@@ -249,8 +249,8 @@ def luno_generate_image(cookie_value, project_id, prompt, ref_image_urls=None):
         "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
     }
     
-    # Use provided reference images or default
-    image_input = ref_image_urls if ref_image_urls else ["https://www.apple.com/vn/services/images/wallpapers/download/tet2026.png"]
+    # Use provided reference images or empty list
+    image_input = ref_image_urls if ref_image_urls else []
     
     payload = {
         "prompt": prompt,
@@ -334,20 +334,17 @@ def run_luno_nanobanana_generation(prompt: str, ref_images: list = None) -> dict
     if ref_images:
         for idx, (image_bytes, filename, ext) in enumerate(ref_images[:5]):  # Luno limit 5 images
             try:
-                # Upload image to a temporary hosting service or use data URI
-                # For now, we'll use a placeholder - in production you'd upload to a CDN
                 print(f"[Luno] Processing reference image {idx+1}: {filename}")
                 # Convert image to base64 data URI
-                import base64
-                b64_image = base64.b64encode(image_bytes).decode()
                 mime_type = f"image/{'jpeg' if ext == 'jpg' else ext}"
-                data_uri = f"data:{mime_type};base64,{b64_image}"
+                data_uri = f"data:{mime_type};base64,{_base64.b64encode(image_bytes).decode()}"
                 ref_urls.append(data_uri)
+                print(f"[Luno] Reference image {idx+1} converted to data URI")
             except Exception as e:
                 print(f"[Luno] Failed to process ref {idx+1}: {e}")
     
     # Step 7: Generate image
-    print("\n[Luno] Step 6: Generating AI image...")
+    print("\n[Luno] Step 7: Generating AI image...")
     generation_result = luno_generate_image(cookie_value, project_id, prompt, ref_urls if ref_urls else None)
     
     if not generation_result or 'output' not in generation_result or not generation_result['output']:
