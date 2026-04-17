@@ -249,14 +249,14 @@ def luno_generate_image(cookie_value, project_id, prompt, ref_image_urls=None):
         "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
     }
     
-    # Use provided reference images or empty list
+    # Use provided reference images or empty list (no default image)
     image_input = ref_image_urls if ref_image_urls else []
     
     payload = {
         "prompt": prompt,
         "aspectRatio": "1:1",
-        "model": "google/nano-banana-2",
-        "imageInput": image_input,
+        "model": "google/nano-banana-pro",  # Changed from -2 to -pro
+        "imageInput": image_input,  # Empty list if no reference images
         "duration": 4,
         "generateAudio": True,
         "resolution": "1K",
@@ -267,6 +267,7 @@ def luno_generate_image(cookie_value, project_id, prompt, ref_image_urls=None):
     
     print(f"\n[*] Generating image with Luno Studio...")
     print(f"[*] Prompt: {prompt}")
+    print(f"[*] Reference images: {len(image_input)}")
     response = requests.post(url, headers=headers, json=payload)
     print(f"[*] Luno generate response: {response.status_code}")
     
@@ -1445,7 +1446,7 @@ def _buzzy_register_user(email, password, email_code):
         return data['data']['token']
     raise Exception(f"Registration failed")
 
-def _buzzy_create_video_project(token, prompt):
+def _buzzy_create_video_project(token, prompt, aspect_ratio):
     response = requests.post(
         'https://api.buzzy.now/api/app/v1/project/create',
         json={
@@ -1454,7 +1455,7 @@ def _buzzy_create_video_project(token, prompt):
             'instructionSegments': [{'type': 'text', 'content': prompt}],
             'imageUrls': [],
             'duration': 10,
-            'aspectRatio': '16:9',
+            'aspectRatio': aspect_ratio,  # Now dynamic: "16:9" or "9:16"
             'prompt': prompt
         },
         headers={
@@ -1507,7 +1508,7 @@ def _buzzy_poll_for_video(token, project_id, interval=5):
 
         time.sleep(interval)
 
-def run_seedance2_generation(prompt: str) -> dict:
+def run_seedance2_generation(prompt: str, size: str = "1280x720") -> dict:
     email, sid_token = _buzzy_generate_temp_email()
     password = _buzzy_generate_random_password()
     _buzzy_send_verification_code(email)
@@ -1517,7 +1518,14 @@ def run_seedance2_generation(prompt: str) -> dict:
         raise Exception("Did not receive a verification code")
 
     token = _buzzy_register_user(email, password, code)
-    project_id = _buzzy_create_video_project(token, prompt)
+    
+    # Convert size to aspect ratio
+    if size == "720x1280":
+        aspect_ratio = "9:16"
+    else:
+        aspect_ratio = "16:9"  # Default for 1280x720 or any other
+    
+    project_id = _buzzy_create_video_project(token, prompt, aspect_ratio)
     video_url = _buzzy_poll_for_video(token, project_id)
 
     return {
@@ -1533,7 +1541,7 @@ def run_generation(prompt: str, size: str, model: str, ref_images: list = None) 
     if model == "nanobanana_pro_alt":
         return run_luno_nanobanana_generation(prompt, ref_images or [])
     if model == "seedance_2":
-        return run_seedance2_generation(prompt)
+        return run_seedance2_generation(prompt, size)
     if model == "wan_2_6":
         return run_wan26_generation(prompt, size, ref_images or [])
     return run_synthesia_generation(prompt, size, model)
@@ -1775,8 +1783,13 @@ async def generate(
         size_value = "1080x1080"
         size_label = "1:1"
     elif model_value == "seedance_2":
-        size_value = "1280x720"
-        size_label = "16:9"
+        # Seedance 2 now respects the selected size
+        if raw_size == "720x1280":
+            size_value = "720x1280"
+            size_label = "9:16"
+        else:
+            size_value = "1280x720"
+            size_label = "16:9"
     elif model_value == "wan_2_6":
         size_value = "1280x720"
         size_label = "16:9"
@@ -1993,7 +2006,7 @@ async def models_cmd(interaction: discord.Interaction):
             "`Sora 2` — OpenAI Sora v2\n"
             "`Veo 3.1` — Google Veo 3.1\n"
             "`Veo 3.1 Fast` — Google Veo 3.1 (faster)\n"
-            "`Seedance 2` — Seedance v2\n"
+            "`Seedance 2` — Seedance v2 (supports 16:9 and 9:16)\n"
             "`Wan 2.6` — Wan 2.6 video generation with reference images"
         ),
         inline=False,
