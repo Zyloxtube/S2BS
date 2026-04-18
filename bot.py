@@ -82,7 +82,7 @@ def keep_alive():
     t = Thread(target=run_web)
     t.start()
 
-# ─── LUNO STUDIO NANO BANANA PRO CONFIGURATION (EXACT MATCH TO WORKING CODE) ───
+# ─── LUNO STUDIO FUNCTIONS (EXACT MATCH TO WORKING SCRIPT) ─────────────────────
 LUNO_SUPABASE_URL = "https://liuvfhbmbtunebdwhiqh.supabase.co"
 LUNO_API_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxpdXZmaGJtYnR1bmViZHdoaXFoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ2MTY0MTYsImV4cCI6MjA5MDE5MjQxNn0.R8Ybduar3YilzBwbK3V8bgNSUQO66VDQmDgmNNjeVsI"
 
@@ -98,7 +98,6 @@ LUNO_HEADERS = {
     "x-supabase-api-version": "2024-01-01"
 }
 
-# ─── LUNO STUDIO FUNCTIONS (EXACT MATCH TO WORKING CODE) ───────────────────────
 def luno_generate_code_challenge():
     code_verifier = secrets.token_urlsafe(32)
     code_challenge = _base64.urlsafe_b64encode(
@@ -110,7 +109,7 @@ def luno_get_temp_email():
     emailnator = Emailnator()
     email_data = emailnator.generate_email()
     email = email_data["email"][0]
-    print(f"[+] Generated Luno email: {email}")
+    print(f"[+] Generated email: {email}")
     return emailnator, email
 
 def luno_wait_for_verification_code(emailnator, email, timeout=120):
@@ -190,7 +189,6 @@ def luno_verify_email(email, verification_code):
     return response.json()
 
 def luno_create_cookie_value(verify_result):
-    """Create the exact cookie value format from the verify result"""
     cookie_data = {
         "access_token": verify_result['access_token'],
         "token_type": verify_result.get('token_type', 'bearer'),
@@ -205,7 +203,6 @@ def luno_create_cookie_value(verify_result):
     return f"base64-{base64_encoded}"
 
 def luno_create_project(cookie_value, project_id, timestamp):
-    """Create a new project with the cookie"""
     url = "https://www.lunostudio.ai/api/projects"
     
     headers = {
@@ -236,7 +233,6 @@ def luno_create_project(cookie_value, project_id, timestamp):
         return None
 
 def luno_generate_image(cookie_value, project_id, prompt, ref_image_urls=None):
-    """Generate AI image with the cookie"""
     url = "https://www.lunostudio.ai/api/generate"
     
     headers = {
@@ -249,13 +245,12 @@ def luno_generate_image(cookie_value, project_id, prompt, ref_image_urls=None):
         "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
     }
     
-    # Use provided reference images or empty list
     image_input = ref_image_urls if ref_image_urls else []
     
     payload = {
         "prompt": prompt,
         "aspectRatio": "1:1",
-        "model": "google/nano-banana-pro",
+        "model": "google/nano-banana-2",
         "imageInput": image_input,
         "duration": 4,
         "generateAudio": True,
@@ -266,7 +261,6 @@ def luno_generate_image(cookie_value, project_id, prompt, ref_image_urls=None):
     }
     
     print(f"\n[*] Generating image with prompt: {prompt[:50]}...")
-    print(f"[*] Reference images: {len(image_input)}")
     response = requests.post(url, headers=headers, json=payload)
     print(f"[*] Generate response: {response.status_code}")
     
@@ -277,7 +271,7 @@ def luno_generate_image(cookie_value, project_id, prompt, ref_image_urls=None):
         return None
 
 def run_luno_nanobanana_generation(prompt: str, ref_images: list = None, ref_urls: list = None) -> dict:
-    """Run Luno Studio Nano Banana Pro generation using exact working pattern"""
+    """Run Luno Studio generation - EXACT same flow as working script"""
     
     print("=" * 70)
     print("Luno Studio Auto Signup & Image Generator")
@@ -348,7 +342,7 @@ def run_luno_nanobanana_generation(prompt: str, ref_images: list = None, ref_url
         return {
             "url": image_url,
             "download_url": image_url,
-            "is_nanobanana_pro_alt": True,
+            "is_nanobanana_alt": True,
             "email": email,
             "password": password,
         }
