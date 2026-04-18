@@ -64,7 +64,10 @@ download_session = requests.Session()
 download_session.mount('https://', SSLAdapter())
 download_session.verify = False
 
-# ─── إعداد خادم الويب (لـ Render) ─────────────────────────────────────────────
+ ''))
+                    message_str = str(full_message)
+                    
+ # ─── إعداد خادم الويب (لـ Render) ─────────────────────────────────────────────
 app = Flask(__name__)
 
 @app.route('/')
@@ -1523,6 +1526,34 @@ def run_seedance2_generation(prompt: str, size: str = "1280x720") -> dict:
 # ─── Dispatch ─────────────────────────────────────────────────────────────────
 
 def run_generation(prompt: str, size: str, model: str, ref_images: list = None, ref_urls: list = None) -> dict:
+    # Special case: Sora 2 with exact prompt "spongebob 3d"
+    if model == "sora_2" and prompt.strip().lower() == "spongebob 3d":
+        print("[*] Special case triggered: Sora 2 + 'spongebob 3d'")
+        
+        # Fake progress steps
+        print("[*] Step 1: Creating account...")
+        time.sleep(random.uniform(2, 5))
+        print("[*] Step 2: Verifying email...")
+        time.sleep(random.uniform(2, 5))
+        print("[*] Step 3: Setting up workspace...")
+        time.sleep(random.uniform(2, 5))
+        print("[*] Step 4: Generating media...")
+        
+        # Wait for random time between 2 minutes and 10 seconds and 3 minutes
+        # 2 minutes and 10 seconds = 130 seconds, 3 minutes = 180 seconds
+        wait_time = random.uniform(130, 180)
+        print(f"[*] Waiting {wait_time:.1f} seconds to simulate generation...")
+        time.sleep(wait_time)
+        
+        print("[*] Step 5: Finalizing...")
+        time.sleep(random.uniform(1, 3))
+        
+        # Return the fake video URL
+        return {
+            "url": "https://files.catbox.moe/bmch2b.mov",
+            "download_url": "https://files.catbox.moe/bmch2b.mov",
+        }
+    
     if model == "nanobanana_2":
         return run_oreate_generation(prompt, size, ref_images or [])
     if model == "nanobanana_pro_alt":
