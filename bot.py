@@ -1547,8 +1547,8 @@ def run_generation(prompt: str, size: str, model: str, ref_images: list = None, 
         
         # Return the fake video URL
         return {
-            "url": "https://files.catbox.moe/bmch2b.mov",
-            "download_url": "https://files.catbox.moe/bmch2b.mov",
+            "url": "https://files.catbox.moe/t90mo4.mov",
+            "download_url": "https://files.catbox.moe/t90mo4.mov",
         }
     
     if model == "nanobanana_2":
