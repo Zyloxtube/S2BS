@@ -82,7 +82,7 @@ def keep_alive():
     t = Thread(target=run_web)
     t.start()
 
-# ─── LUNO STUDIO NANO BANANA PRO CONFIGURATION ─────────────────────────────────
+# ─── LUNO STUDIO NANO BANANA PRO CONFIGURATION (EXACT MATCH TO WORKING CODE) ───
 LUNO_SUPABASE_URL = "https://liuvfhbmbtunebdwhiqh.supabase.co"
 LUNO_API_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxpdXZmaGJtYnR1bmViZHdoaXFoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ2MTY0MTYsImV4cCI6MjA5MDE5MjQxNn0.R8Ybduar3YilzBwbK3V8bgNSUQO66VDQmDgmNNjeVsI"
 
@@ -98,7 +98,7 @@ LUNO_HEADERS = {
     "x-supabase-api-version": "2024-01-01"
 }
 
-# ─── LUNO STUDIO FUNCTIONS ─────────────────────────────────────────────────────
+# ─── LUNO STUDIO FUNCTIONS (EXACT MATCH TO WORKING CODE) ───────────────────────
 def luno_generate_code_challenge():
     code_verifier = secrets.token_urlsafe(32)
     code_challenge = _base64.urlsafe_b64encode(
@@ -266,6 +266,7 @@ def luno_generate_image(cookie_value, project_id, prompt, ref_image_urls=None):
     }
     
     print(f"\n[*] Generating image with prompt: {prompt[:50]}...")
+    print(f"[*] Reference images: {len(image_input)}")
     response = requests.post(url, headers=headers, json=payload)
     print(f"[*] Generate response: {response.status_code}")
     
@@ -275,8 +276,8 @@ def luno_generate_image(cookie_value, project_id, prompt, ref_image_urls=None):
         print(f"[!] Failed: {response.text}")
         return None
 
-def run_luno_nanobanana_generation(prompt: str, ref_images: list = None) -> dict:
-    """Run Luno Studio Nano Banana Pro generation"""
+def run_luno_nanobanana_generation(prompt: str, ref_images: list = None, ref_urls: list = None) -> dict:
+    """Run Luno Studio Nano Banana Pro generation using exact working pattern"""
     
     print("=" * 70)
     print("Luno Studio Auto Signup & Image Generator")
@@ -332,25 +333,9 @@ def run_luno_nanobanana_generation(prompt: str, ref_images: list = None) -> dict
     
     print(f"[+] Project ID: {project_id}")
     
-    # Step 5.5: Process reference images if any
-    ref_urls = []
-    if ref_images:
-        print(f"\n[Step 5.5] Processing {len(ref_images)} reference images...")
-        for idx, (image_bytes, filename, ext) in enumerate(ref_images[:5]):
-            try:
-                print(f"  Processing image {idx+1}: {filename}")
-                # Convert image to base64 data URI
-                mime_type = f"image/{'jpeg' if ext == 'jpg' else ext}"
-                b64_data = _base64.b64encode(image_bytes).decode()
-                data_uri = f"data:{mime_type};base64,{b64_data}"
-                ref_urls.append(data_uri)
-                print(f"  ✓ Image {idx+1} converted")
-            except Exception as e:
-                print(f"  ✗ Failed to process image {idx+1}: {e}")
-    
     # Step 6: Generate image
     print("\n[Step 6] Generating AI image...")
-    generation_result = luno_generate_image(cookie_value, project_id, prompt, ref_urls if ref_urls else None)
+    generation_result = luno_generate_image(cookie_value, project_id, prompt, ref_urls)
     
     if generation_result and 'output' in generation_result and generation_result['output']:
         image_url = generation_result['output'][0]
@@ -1543,11 +1528,11 @@ def run_seedance2_generation(prompt: str, size: str = "1280x720") -> dict:
 
 # ─── Dispatch ─────────────────────────────────────────────────────────────────
 
-def run_generation(prompt: str, size: str, model: str, ref_images: list = None) -> dict:
+def run_generation(prompt: str, size: str, model: str, ref_images: list = None, ref_urls: list = None) -> dict:
     if model == "nanobanana_2":
         return run_oreate_generation(prompt, size, ref_images or [])
     if model == "nanobanana_pro_alt":
-        return run_luno_nanobanana_generation(prompt, ref_images or [])
+        return run_luno_nanobanana_generation(prompt, ref_images, ref_urls)
     if model == "seedance_2":
         return run_seedance2_generation(prompt, size)
     if model == "wan_2_6":
@@ -1584,7 +1569,7 @@ LUNO_PROGRESS_STAGES = [
     {"threshold": 3,   "label": "Creating Luno account","emoji": "📧"},
     {"threshold": 15,  "label": "Verifying email",      "emoji": "✉️"},
     {"threshold": 25,  "label": "Creating project",     "emoji": "📁"},
-    {"threshold": 35,  "label": "Uploading references", "emoji": "📤"},
+    {"threshold": 35,  "label": "Preparing references", "emoji": "📤"},
     {"threshold": 50,  "label": "Generating image",     "emoji": "🎨"},
     {"threshold": 70,  "label": "Processing",           "emoji": "⚡"},
     {"threshold": 90,  "label": "Finalizing",           "emoji": "✨"},
@@ -1811,9 +1796,13 @@ async def generate(
     actual_prompt = prompt
 
     ref_images = []
+    ref_urls = []
+    
+    # Handle reference images for different models
     if model_value in ["nanobanana_2", "wan_2_6", "nanobanana_pro_alt"]:
         raw_refs = [ref1, ref2, ref3, ref4, ref5, ref6, ref7, ref8, ref9]
         bad_refs = []
+        
         for attachment in raw_refs:
             if attachment is None:
                 continue
@@ -1823,6 +1812,8 @@ async def generate(
                 bad_refs.append(fname)
             else:
                 ref_images.append((attachment, fname, ext))
+                # For Luno Alt, store the Discord CDN URL directly
+                ref_urls.append(attachment.url)
 
         if bad_refs:
             await interaction.response.send_message(
@@ -1831,14 +1822,19 @@ async def generate(
             )
             return
 
-        downloaded = []
-        for attachment_obj, fname, ext in ref_images:
-            try:
-                img_bytes = await attachment_obj.read()
-                downloaded.append((img_bytes, fname, ext))
-            except Exception as e:
-                print(f"Failed to download {fname}: {e}")
-        ref_images = downloaded
+        # For Nano Banana 2 and Wan 2.6, we need to download the images
+        if model_value != "nanobanana_pro_alt":
+            downloaded = []
+            for attachment_obj, fname, ext in ref_images:
+                try:
+                    img_bytes = await attachment_obj.read()
+                    downloaded.append((img_bytes, fname, ext))
+                except Exception as e:
+                    print(f"Failed to download {fname}: {e}")
+            ref_images = downloaded
+        else:
+            # For Luno Alt, we keep ref_images as is for display but use ref_urls for API
+            pass
     else:
         if any(r is not None for r in [ref1, ref2, ref3, ref4, ref5, ref6, ref7, ref8, ref9]):
             await interaction.response.send_message(
@@ -1858,9 +1854,15 @@ async def generate(
     async def run_gen():
         try:
             loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                None, run_generation, actual_prompt, size_value, model_value, ref_images
-            )
+            # Pass ref_urls for Luno Alt model
+            if model_value == "nanobanana_pro_alt":
+                result = await loop.run_in_executor(
+                    None, run_generation, actual_prompt, size_value, model_value, ref_images, ref_urls
+                )
+            else:
+                result = await loop.run_in_executor(
+                    None, run_generation, actual_prompt, size_value, model_value, ref_images
+                )
             generation_result["data"] = result
         except Exception as exc:
             generation_result["error"] = str(exc)
