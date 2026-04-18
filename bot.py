@@ -64,10 +64,7 @@ download_session = requests.Session()
 download_session.mount('https://', SSLAdapter())
 download_session.verify = False
 
- ''))
-                    message_str = str(full_message)
-                    
- # ─── إعداد خادم الويب (لـ Render) ─────────────────────────────────────────────
+# ─── إعداد خادم الويب (لـ Render) ─────────────────────────────────────────────
 app = Flask(__name__)
 
 @app.route('/')
