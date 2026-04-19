@@ -20,9 +20,6 @@ from threading import Thread
 import ssl
 from requests.adapters import HTTPAdapter
 from urllib3.poolmanager import PoolManager
-import secrets
-import hashlib
-from emailnator import Emailnator
 
 # Custom adapter to ignore SSL verification
 class SSLAdapter(HTTPAdapter):
@@ -81,273 +78,6 @@ def run_web():
 def keep_alive():
     t = Thread(target=run_web)
     t.start()
-
-# ─── LUNO STUDIO FUNCTIONS (EXACT MATCH TO WORKING SCRIPT) ─────────────────────
-LUNO_SUPABASE_URL = "https://liuvfhbmbtunebdwhiqh.supabase.co"
-LUNO_API_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxpdXZmaGJtYnR1bmViZHdoaXFoIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ2MTY0MTYsImV4cCI6MjA5MDE5MjQxNn0.R8Ybduar3YilzBwbK3V8bgNSUQO66VDQmDgmNNjeVsI"
-
-LUNO_HEADERS = {
-    "accept": "*/*",
-    "accept-language": "en-US,en;q=0.9",
-    "apikey": LUNO_API_KEY,
-    "content-type": "application/json;charset=UTF-8",
-    "origin": "https://www.lunostudio.ai",
-    "referer": "https://www.lunostudio.ai/",
-    "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-    "x-client-info": "supabase-ssr/0.9.0 createBrowserClient",
-    "x-supabase-api-version": "2024-01-01"
-}
-
-def luno_generate_code_challenge():
-    code_verifier = secrets.token_urlsafe(32)
-    code_challenge = _base64.urlsafe_b64encode(
-        hashlib.sha256(code_verifier.encode()).digest()
-    ).decode().replace('=', '')
-    return code_challenge, code_verifier
-
-def luno_get_temp_email():
-    emailnator = Emailnator()
-    email_data = emailnator.generate_email()
-    email = email_data["email"][0]
-    print(f"[+] Generated email: {email}")
-    return emailnator, email
-
-def luno_wait_for_verification_code(emailnator, email, timeout=120):
-    print("\n[*] Waiting for verification code...")
-    start_time = time.time()
-    seen_messages = set()
-    
-    while time.time() - start_time < timeout:
-        try:
-            inbox_result = emailnator.inbox(email)
-            messages = []
-            if isinstance(inbox_result, dict) and "messageData" in inbox_result:
-                messages = inbox_result["messageData"]
-            
-            for msg in messages:
-                msg_id = str(msg)
-                if msg_id in seen_messages:
-                    continue
-                seen_messages.add(msg_id)
-                
-                try:
-                    full_message = emailnator.get_message(email, msg if isinstance(msg, str) else msg.get('messageID', ''))
-                    message_str = str(full_message)
-                    
-                    if 'luno' in message_str.lower() or 'confirm your signup' in message_str.lower():
-                        code_match = re.search(r'\b(\d{6})\b', message_str)
-                        if code_match:
-                            code = code_match.group(1)
-                            print(f"✅ VERIFICATION CODE: {code}")
-                            return code
-                except:
-                    pass
-        except:
-            pass
-        time.sleep(0.5)
-    
-    raise Exception("Timeout: No verification code received")
-
-def luno_signup(email, password, code_challenge):
-    url = f"{LUNO_SUPABASE_URL}/auth/v1/signup"
-    payload = {
-        "email": email,
-        "password": password,
-        "data": {},
-        "gotrue_meta_security": {},
-        "code_challenge": code_challenge,
-        "code_challenge_method": "s256"
-    }
-    
-    print(f"\n[*] Sending signup request...")
-    response = requests.post(url, headers=LUNO_HEADERS, json=payload)
-    print(f"[*] Signup response: {response.status_code}")
-    
-    if response.status_code != 200:
-        print(f"[!] Error: {response.text}")
-        return None
-    
-    return response.json()
-
-def luno_verify_email(email, verification_code):
-    url = f"{LUNO_SUPABASE_URL}/auth/v1/verify"
-    payload = {
-        "email": email,
-        "token": verification_code,
-        "type": "signup",
-        "gotrue_meta_security": {}
-    }
-    
-    print(f"\n[*] Verifying with code: {verification_code}")
-    response = requests.post(url, headers=LUNO_HEADERS, json=payload)
-    print(f"[*] Verify response: {response.status_code}")
-    
-    if response.status_code != 200:
-        print(f"[!] Error: {response.text}")
-        return None
-    
-    return response.json()
-
-def luno_create_cookie_value(verify_result):
-    cookie_data = {
-        "access_token": verify_result['access_token'],
-        "token_type": verify_result.get('token_type', 'bearer'),
-        "expires_in": verify_result.get('expires_in', 3600),
-        "expires_at": verify_result.get('expires_at'),
-        "refresh_token": verify_result.get('refresh_token'),
-        "user": verify_result.get('user')
-    }
-    
-    json_str = _json.dumps(cookie_data)
-    base64_encoded = _base64.b64encode(json_str.encode()).decode()
-    return f"base64-{base64_encoded}"
-
-def luno_create_project(cookie_value, project_id, timestamp):
-    url = "https://www.lunostudio.ai/api/projects"
-    
-    headers = {
-        "accept": "*/*",
-        "accept-language": "en-US,en;q=0.9",
-        "content-type": "application/json",
-        "cookie": f"geo-country=US; sb-liuvfhbmbtunebdwhiqh-auth-token={cookie_value}",
-        "origin": "https://www.lunostudio.ai",
-        "referer": "https://www.lunostudio.ai/dashboard",
-        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-    }
-    
-    payload = {
-        "id": project_id,
-        "name": "Untitled",
-        "createdAt": timestamp,
-        "updatedAt": timestamp
-    }
-    
-    response = requests.post(url, headers=headers, json=payload)
-    print(f"[*] Create project response: {response.status_code}")
-    
-    if response.status_code == 200:
-        print(f"[+] Project created successfully!")
-        return response.json()
-    else:
-        print(f"[!] Failed: {response.text}")
-        return None
-
-def luno_generate_image(cookie_value, project_id, prompt, ref_image_urls=None):
-    url = "https://www.lunostudio.ai/api/generate"
-    
-    headers = {
-        "accept": "*/*",
-        "accept-language": "en-US,en;q=0.9",
-        "content-type": "application/json",
-        "cookie": f"geo-country=US; sb-liuvfhbmbtunebdwhiqh-auth-token={cookie_value}",
-        "origin": "https://www.lunostudio.ai",
-        "referer": f"https://www.lunostudio.ai/project/{project_id}",
-        "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-    }
-    
-    image_input = ref_image_urls if ref_image_urls else []
-    
-    payload = {
-        "prompt": prompt,
-        "aspectRatio": "1:1",
-        "model": "google/nano-banana-2",
-        "imageInput": image_input,
-        "duration": 4,
-        "generateAudio": True,
-        "resolution": "1K",
-        "modelOptions": {
-            "grounding": "off"
-        }
-    }
-    
-    print(f"\n[*] Generating image with prompt: {prompt[:50]}...")
-    response = requests.post(url, headers=headers, json=payload)
-    print(f"[*] Generate response: {response.status_code}")
-    
-    if response.status_code == 200:
-        return response.json()
-    else:
-        print(f"[!] Failed: {response.text}")
-        return None
-
-def run_luno_nanobanana_generation(prompt: str, ref_images: list = None, ref_urls: list = None) -> dict:
-    """Run Luno Studio generation - EXACT same flow as working script"""
-    
-    print("=" * 70)
-    print("Luno Studio Auto Signup & Image Generator")
-    print("=" * 70)
-    
-    # Step 1: Generate temporary email
-    print("\n[Step 1] Generating temporary email...")
-    emailnator, email = luno_get_temp_email()
-    
-    password = secrets.token_urlsafe(12)
-    code_challenge, code_verifier = luno_generate_code_challenge()
-    print(f"[+] Password: {password}")
-    
-    # Step 2: Sign up
-    print("\n[Step 2] Creating account...")
-    signup_result = luno_signup(email, password, code_challenge)
-    
-    if not signup_result or 'id' not in signup_result:
-        raise Exception("Signup failed")
-    
-    user_id = signup_result['id']
-    print(f"[+] User ID: {user_id}")
-    
-    # Step 3: Get verification code
-    print("\n[Step 3] Getting verification code...")
-    try:
-        verification_code = luno_wait_for_verification_code(emailnator, email)
-    except Exception as e:
-        raise Exception(f"Failed to get verification code: {e}")
-    
-    # Step 4: Verify email
-    print("\n[Step 4] Verifying email...")
-    verify_result = luno_verify_email(email, verification_code)
-    
-    if not verify_result or 'access_token' not in verify_result:
-        raise Exception("Verification failed")
-    
-    print(f"[+] Email verified!")
-    
-    # Create the cookie value from the verify result
-    cookie_value = luno_create_cookie_value(verify_result)
-    print(f"[+] Cookie created")
-    
-    # Step 5: Create project
-    print("\n[Step 5] Creating project...")
-    timestamp = int(time.time() * 1000)
-    project_id = f"proj-{timestamp}-{secrets.token_urlsafe(5).replace('-', '')}"
-    
-    project_result = luno_create_project(cookie_value, project_id, timestamp)
-    
-    if not project_result:
-        raise Exception("Project creation failed")
-    
-    print(f"[+] Project ID: {project_id}")
-    
-    # Step 6: Generate image
-    print("\n[Step 6] Generating AI image...")
-    generation_result = luno_generate_image(cookie_value, project_id, prompt, ref_urls)
-    
-    if generation_result and 'output' in generation_result and generation_result['output']:
-        image_url = generation_result['output'][0]
-        print("\n" + "=" * 70)
-        print("✅ IMAGE GENERATED SUCCESSFULLY!")
-        print("=" * 70)
-        print(f"\n🔗 {image_url}\n")
-        print("=" * 70)
-        
-        return {
-            "url": image_url,
-            "download_url": image_url,
-            "is_nanobanana_alt": True,
-            "email": email,
-            "password": password,
-        }
-    else:
-        raise Exception("Image generation failed - no output URL")
 
 # ─── Temp email ──────────────────────────────────────────────────────────────
 
@@ -1433,7 +1163,7 @@ def _buzzy_register_user(email, password, email_code):
         return data['data']['token']
     raise Exception(f"Registration failed")
 
-def _buzzy_create_video_project(token, prompt, aspect_ratio):
+def _buzzy_create_video_project(token, prompt):
     response = requests.post(
         'https://api.buzzy.now/api/app/v1/project/create',
         json={
@@ -1442,7 +1172,7 @@ def _buzzy_create_video_project(token, prompt, aspect_ratio):
             'instructionSegments': [{'type': 'text', 'content': prompt}],
             'imageUrls': [],
             'duration': 10,
-            'aspectRatio': aspect_ratio,
+            'aspectRatio': '16:9',
             'prompt': prompt
         },
         headers={
@@ -1495,7 +1225,7 @@ def _buzzy_poll_for_video(token, project_id, interval=5):
 
         time.sleep(interval)
 
-def run_seedance2_generation(prompt: str, size: str = "1280x720") -> dict:
+def run_seedance2_generation(prompt: str) -> dict:
     email, sid_token = _buzzy_generate_temp_email()
     password = _buzzy_generate_random_password()
     _buzzy_send_verification_code(email)
@@ -1505,14 +1235,7 @@ def run_seedance2_generation(prompt: str, size: str = "1280x720") -> dict:
         raise Exception("Did not receive a verification code")
 
     token = _buzzy_register_user(email, password, code)
-    
-    # Convert size to aspect ratio
-    if size == "720x1280":
-        aspect_ratio = "9:16"
-    else:
-        aspect_ratio = "16:9"
-    
-    project_id = _buzzy_create_video_project(token, prompt, aspect_ratio)
+    project_id = _buzzy_create_video_project(token, prompt)
     video_url = _buzzy_poll_for_video(token, project_id)
 
     return {
@@ -1522,41 +1245,11 @@ def run_seedance2_generation(prompt: str, size: str = "1280x720") -> dict:
 
 # ─── Dispatch ─────────────────────────────────────────────────────────────────
 
-def run_generation(prompt: str, size: str, model: str, ref_images: list = None, ref_urls: list = None) -> dict:
-    # Special case: Sora 2 with exact prompt "spongebob 3d"
-    if model == "sora_2" and prompt.strip().lower() == "spongebob 3d":
-        print("[*] Special case triggered: Sora 2 + 'spongebob 3d'")
-        
-        # Fake progress steps
-        print("[*] Step 1: Creating account...")
-        time.sleep(random.uniform(2, 5))
-        print("[*] Step 2: Verifying email...")
-        time.sleep(random.uniform(2, 5))
-        print("[*] Step 3: Setting up workspace...")
-        time.sleep(random.uniform(2, 5))
-        print("[*] Step 4: Generating media...")
-        
-        # Wait for random time between 2 minutes and 10 seconds and 3 minutes
-        # 2 minutes and 10 seconds = 130 seconds, 3 minutes = 180 seconds
-        wait_time = random.uniform(130, 180)
-        print(f"[*] Waiting {wait_time:.1f} seconds to simulate generation...")
-        time.sleep(wait_time)
-        
-        print("[*] Step 5: Finalizing...")
-        time.sleep(random.uniform(1, 3))
-        
-        # Return the fake video URL
-        return {
-            "url": "https://files.catbox.moe/t90mo4.mov",
-            "download_url": "https://files.catbox.moe/t90mo4.mov",
-        }
-    
+def run_generation(prompt: str, size: str, model: str, ref_images: list = None) -> dict:
     if model == "nanobanana_2":
         return run_oreate_generation(prompt, size, ref_images or [])
-    if model == "nanobanana_pro_alt":
-        return run_luno_nanobanana_generation(prompt, ref_images, ref_urls)
     if model == "seedance_2":
-        return run_seedance2_generation(prompt, size)
+        return run_seedance2_generation(prompt)
     if model == "wan_2_6":
         return run_wan26_generation(prompt, size, ref_images or [])
     return run_synthesia_generation(prompt, size, model)
@@ -1584,17 +1277,6 @@ NB2_PROGRESS_STAGES = [
     {"threshold": 3,  "label": "Creating account", "emoji": "📧"},
     {"threshold": 10, "label": "Generating image", "emoji": "🎨"},
     {"threshold": 60, "label": "Finalizing",       "emoji": "✨"},
-]
-
-LUNO_PROGRESS_STAGES = [
-    {"threshold": 0,   "label": "Initializing",         "emoji": "⚙️"},
-    {"threshold": 3,   "label": "Creating Luno account","emoji": "📧"},
-    {"threshold": 15,  "label": "Verifying email",      "emoji": "✉️"},
-    {"threshold": 25,  "label": "Creating project",     "emoji": "📁"},
-    {"threshold": 35,  "label": "Preparing references", "emoji": "📤"},
-    {"threshold": 50,  "label": "Generating image",     "emoji": "🎨"},
-    {"threshold": 70,  "label": "Processing",           "emoji": "⚡"},
-    {"threshold": 90,  "label": "Finalizing",           "emoji": "✨"},
 ]
 
 WAN26_PROGRESS_STAGES = [
@@ -1627,9 +1309,6 @@ def build_progress_embed(prompt, size_label, elapsed, model_label, model_value="
     if model_value == "nanobanana_2":
         stages = NB2_PROGRESS_STAGES
         estimated_total = 60
-    elif model_value == "nanobanana_pro_alt":
-        stages = LUNO_PROGRESS_STAGES
-        estimated_total = 100
     elif model_value == "seedance_2":
         stages = SEEDANCE2_PROGRESS_STAGES
         estimated_total = 840
@@ -1675,6 +1354,7 @@ def build_success_embed(prompt, size_label, duration, model_label, model_value="
     embed.add_field(name="🧠 Model", value=f"`{model_label}`", inline=True)
     embed.add_field(name="⏱️ Time Taken", value=f"`{format_duration(duration)}`", inline=True)
     
+    # Add reference images section if any
     if ref_images and len(ref_images) > 0:
         ref_text = ""
         for idx, (_, filename, _) in enumerate(ref_images[:9], 1):
@@ -1695,6 +1375,7 @@ def build_error_embed(error_msg, prompt, size_label, model_label, model_value=""
         embed.add_field(name="📏 Size", value=f"`{size_label}`", inline=True)
     embed.add_field(name="🧠 Model", value=f"`{model_label}`", inline=True)
     
+    # Add reference images section if any
     if ref_images and len(ref_images) > 0:
         ref_text = ""
         for idx, (_, filename, _) in enumerate(ref_images[:9], 1):
@@ -1724,7 +1405,6 @@ NBP_AI_SIZES = ["1080x1080", "1280x720", "720x1280"]
 
 model_choices = [
     app_commands.Choice(name="Nano Banana Pro", value="nanobanana_pro"),
-    app_commands.Choice(name="Nano Banana Pro (Alt)", value="nanobanana_pro_alt"),
     app_commands.Choice(name="Nano Banana 2",   value="nanobanana_2"),
     app_commands.Choice(name="Sora 2",          value="sora_2"),
     app_commands.Choice(name="Veo 3.1",         value="fal_veo3"),
@@ -1735,7 +1415,6 @@ model_choices = [
 
 MODEL_LABELS = {
     "nanobanana_pro": "Nano Banana Pro",
-    "nanobanana_pro_alt": "Nano Banana Pro (Luno)",
     "nanobanana_2":   "Nano Banana 2",
     "sora_2":         "Sora 2",
     "fal_veo3":       "Veo 3.1",
@@ -1758,7 +1437,7 @@ async def on_ready():
     prompt="What the media should show",
     model="AI model to use (default: Nano Banana Pro)",
     size="Video resolution",
-    ref1="Reference image 1 (Nano Banana 2 / Wan 2.6 / Alt only)",
+    ref1="Reference image 1 (Nano Banana 2 / Wan 2.6 only)",
     ref2="Reference image 2",
     ref3="Reference image 3",
     ref4="Reference image 4",
@@ -1792,16 +1471,9 @@ async def generate(
     if model_value == "nanobanana_2":
         size_value = raw_size or "ai_decide"
         size_label = "AI decided"
-    elif model_value == "nanobanana_pro_alt":
-        size_value = "1080x1080"
-        size_label = "1:1"
     elif model_value == "seedance_2":
-        if raw_size == "720x1280":
-            size_value = "720x1280"
-            size_label = "9:16"
-        else:
-            size_value = "1280x720"
-            size_label = "16:9"
+        size_value = "1280x720"
+        size_label = "16:9"
     elif model_value == "wan_2_6":
         size_value = "1280x720"
         size_label = "16:9"
@@ -1818,13 +1490,10 @@ async def generate(
     actual_prompt = prompt
 
     ref_images = []
-    ref_urls = []
-    
-    # Handle reference images for different models
-    if model_value in ["nanobanana_2", "wan_2_6", "nanobanana_pro_alt"]:
+    # Allow reference images for Nano Banana 2 AND Wan 2.6
+    if model_value in ["nanobanana_2", "wan_2_6"]:
         raw_refs = [ref1, ref2, ref3, ref4, ref5, ref6, ref7, ref8, ref9]
         bad_refs = []
-        
         for attachment in raw_refs:
             if attachment is None:
                 continue
@@ -1834,8 +1503,6 @@ async def generate(
                 bad_refs.append(fname)
             else:
                 ref_images.append((attachment, fname, ext))
-                # For Luno Alt, store the Discord CDN URL directly
-                ref_urls.append(attachment.url)
 
         if bad_refs:
             await interaction.response.send_message(
@@ -1844,23 +1511,18 @@ async def generate(
             )
             return
 
-        # For Nano Banana 2 and Wan 2.6, we need to download the images
-        if model_value != "nanobanana_pro_alt":
-            downloaded = []
-            for attachment_obj, fname, ext in ref_images:
-                try:
-                    img_bytes = await attachment_obj.read()
-                    downloaded.append((img_bytes, fname, ext))
-                except Exception as e:
-                    print(f"Failed to download {fname}: {e}")
-            ref_images = downloaded
-        else:
-            # For Luno Alt, we keep ref_images as is for display but use ref_urls for API
-            pass
+        downloaded = []
+        for attachment_obj, fname, ext in ref_images:
+            try:
+                img_bytes = await attachment_obj.read()
+                downloaded.append((img_bytes, fname, ext))
+            except Exception as e:
+                print(f"Failed to download {fname}: {e}")
+        ref_images = downloaded
     else:
         if any(r is not None for r in [ref1, ref2, ref3, ref4, ref5, ref6, ref7, ref8, ref9]):
             await interaction.response.send_message(
-                "⚠️ Reference images only work with **Nano Banana 2**, **Wan 2.6**, or **Nano Banana Pro (Alt)**.",
+                "⚠️ Reference images only work with **Nano Banana 2** or **Wan 2.6**.",
                 ephemeral=True,
             )
             return
@@ -1876,15 +1538,9 @@ async def generate(
     async def run_gen():
         try:
             loop = asyncio.get_event_loop()
-            # Pass ref_urls for Luno Alt model
-            if model_value == "nanobanana_pro_alt":
-                result = await loop.run_in_executor(
-                    None, run_generation, actual_prompt, size_value, model_value, ref_images, ref_urls
-                )
-            else:
-                result = await loop.run_in_executor(
-                    None, run_generation, actual_prompt, size_value, model_value, ref_images
-                )
+            result = await loop.run_in_executor(
+                None, run_generation, actual_prompt, size_value, model_value, ref_images
+            )
             generation_result["data"] = result
         except Exception as exc:
             generation_result["error"] = str(exc)
@@ -1927,15 +1583,19 @@ async def generate(
     download_url = result.get("download_url") or result.get("url")
     if download_url:
         try:
+            # Use the custom session that ignores SSL verification
             response = download_session.get(download_url, timeout=60)
             response.raise_for_status()
             media_bytes = response.content
             
-            is_image = model_value not in VIDEO_MODELS or model_value == "nanobanana_2" or model_value == "nanobanana_pro_alt"
+            # Determine if it's an image or video
+            is_image = model_value not in VIDEO_MODELS or model_value == "nanobanana_2"
             ext = "png" if is_image else "mp4"
             filename = f"generated_media.{ext}"
             
+            # For videos, check file size (Discord has 25MB limit for attachments)
             if not is_image and len(media_bytes) > 25 * 1024 * 1024:
+                # Video too large for Discord, just provide download link
                 success_embed.add_field(
                     name="📥 Download",
                     value=f"[Click to download video]({download_url})",
@@ -2018,8 +1678,7 @@ async def models_cmd(interaction: discord.Interaction):
     embed.add_field(
         name="Image models",
         value=(
-            "`Nano Banana Pro` — fast AI image generation (Synthesia)\n"
-            "`Nano Banana Pro (Alt)` — alternative via Luno Studio with reference images\n"
+            "`Nano Banana Pro` — fast AI image generation\n"
             "`Nano Banana 2` — image generation with up to 9 reference images"
         ),
         inline=False,
@@ -2030,7 +1689,7 @@ async def models_cmd(interaction: discord.Interaction):
             "`Sora 2` — OpenAI Sora v2\n"
             "`Veo 3.1` — Google Veo 3.1\n"
             "`Veo 3.1 Fast` — Google Veo 3.1 (faster)\n"
-            "`Seedance 2` — Seedance v2 (supports 16:9 and 9:16)\n"
+            "`Seedance 2` — Seedance v2\n"
             "`Wan 2.6` — Wan 2.6 video generation with reference images"
         ),
         inline=False,
@@ -2040,13 +1699,16 @@ async def models_cmd(interaction: discord.Interaction):
 # ─── تشغيل البوت ────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    # تشغيل خادم الويب أولاً
     keep_alive()
     
+    # التحقق من وجود التوكن
     TOKEN = os.environ.get("DISCORD_BOT_TOKEN")
     if not TOKEN:
         print("❌ ERROR: DISCORD_BOT_TOKEN environment variable not set!")
         exit(1)
     
+    # تشغيل البوت
     print("🚀 Starting Discord Bot on Render...")
     print("📡 Bot will run 24/7!")
     client.run(TOKEN)
