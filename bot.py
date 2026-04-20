@@ -1305,7 +1305,7 @@ def get_stage(elapsed, stages):
             current = stage
     return current
 
-def build_progress_embed(prompt, size_label, elapsed, model_label, model_value="", ref_count=0):
+def build_progress_embed(prompt, size_label, elapsed, model_label, model_value="", ref_count=0, current_gen=0, total_gen=0):
     if model_value == "nanobanana_2":
         stages = NB2_PROGRESS_STAGES
         estimated_total = 60
@@ -1336,15 +1336,17 @@ def build_progress_embed(prompt, size_label, elapsed, model_label, model_value="
     embed.add_field(name="🧠 Model", value=f"`{model_label}`", inline=True)
     if ref_count > 0:
         embed.add_field(name="🖼️ Reference Images", value=f"`{ref_count} image(s)`", inline=True)
+    if total_gen > 1:
+        embed.add_field(name="🎲 Progress", value=f"`Generating {current_gen}/{total_gen}`", inline=True)
     embed.add_field(name="⏱️ Elapsed", value=f"`{format_duration(elapsed)}`", inline=True)
     embed.add_field(name=f"{stage['emoji']} Status", value=f"**{stage['label']}**", inline=True)
     embed.add_field(name="Progress", value=f"`{bar}` {int(progress * 100)}%", inline=False)
     embed.set_footer(text=f"Powered by {model_label}  |  Please wait...")
     return embed
 
-def build_success_embed(prompt, size_label, duration, model_label, model_value="", ref_images=None):
+def build_success_embed(prompt, size_label, duration, model_label, model_value="", ref_images=None, results=None, failed_count=0):
     embed = discord.Embed(
-        title="✅  Media Generated Successfully!",
+        title="✅  Media Generation Complete!",
         color=SUCCESS_COLOR,
         timestamp=discord.utils.utcnow(),
     )
@@ -1360,6 +1362,21 @@ def build_success_embed(prompt, size_label, duration, model_label, model_value="
         for idx, (_, filename, _) in enumerate(ref_images[:9], 1):
             ref_text += f"📷 **Ref {idx}:** `{filename}`\n"
         embed.add_field(name=f"🖼️ Reference Images ({len(ref_images)})", value=ref_text, inline=False)
+    
+    # Add results section
+    if results:
+        results_text = ""
+        for idx, result in enumerate(results, 1):
+            if result.get("success"):
+                url = result.get("url") or result.get("download_url")
+                is_image = model_value not in VIDEO_MODELS or model_value == "nanobanana_2"
+                media_icon = "🖼️" if is_image else "🎬"
+                results_text += f"{media_icon} **Item {idx}:** [Click to view]({url})\n"
+            else:
+                results_text += f"❌ **Item {idx}:** failed ❌\n"
+        
+        if results_text:
+            embed.add_field(name=f"📦 Generated Media ({len([r for r in results if r.get('success')])}/{len(results)})", value=results_text, inline=False)
     
     embed.set_footer(text=f"Powered by {model_label}")
     return embed
@@ -1413,6 +1430,15 @@ model_choices = [
     app_commands.Choice(name="Wan 2.6",         value="wan_2_6"),
 ]
 
+amount_choices = [
+    app_commands.Choice(name="1", value=1),
+    app_commands.Choice(name="2", value=2),
+    app_commands.Choice(name="3", value=3),
+    app_commands.Choice(name="4", value=4),
+    app_commands.Choice(name="5", value=5),
+    app_commands.Choice(name="6", value=6),
+]
+
 MODEL_LABELS = {
     "nanobanana_pro": "Nano Banana Pro",
     "nanobanana_2":   "Nano Banana 2",
@@ -1437,6 +1463,7 @@ async def on_ready():
     prompt="What the media should show",
     model="AI model to use (default: Nano Banana Pro)",
     size="Video resolution",
+    amount="Number of media to generate (1-6)",
     ref1="Reference image 1 (Nano Banana 2 / Wan 2.6 only)",
     ref2="Reference image 2",
     ref3="Reference image 3",
@@ -1447,12 +1474,13 @@ async def on_ready():
     ref8="Reference image 8",
     ref9="Reference image 9",
 )
-@app_commands.choices(size=size_choices, model=model_choices)
+@app_commands.choices(size=size_choices, model=model_choices, amount=amount_choices)
 async def generate(
     interaction: discord.Interaction,
     prompt: str,
     model: app_commands.Choice[str] = None,
     size: app_commands.Choice[str] = None,
+    amount: app_commands.Choice[int] = None,
     ref1: discord.Attachment = None,
     ref2: discord.Attachment = None,
     ref3: discord.Attachment = None,
@@ -1463,6 +1491,13 @@ async def generate(
     ref8: discord.Attachment = None,
     ref9: discord.Attachment = None,
 ):
+    # Parse amount (default to 1, range 1-6)
+    amount_value = amount.value if amount else 1
+    if amount_value < 1:
+        amount_value = 1
+    if amount_value > 6:
+        amount_value = 6
+    
     model_value = model.value if model else "nanobanana_pro"
     model_label = MODEL_LABELS.get(model_value, model_value)
 
@@ -1527,106 +1562,110 @@ async def generate(
             )
             return
 
-    start_embed = build_progress_embed(prompt, size_label, 0, model_label, model_value, len(ref_images))
+    # Show initial progress embed
+    start_embed = build_progress_embed(prompt, size_label, 0, model_label, model_value, len(ref_images), 0, amount_value)
     await interaction.response.send_message(embed=start_embed)
     status_msg = await interaction.original_response()
 
-    start_time = time.time()
-    generation_done = asyncio.Event()
-    generation_result = {"data": None, "error": None}
+    # Storage for all results
+    all_results = []  # Each will be dict with "success", "url", "download_url", "error"
+    total_start_time = time.time()
 
-    async def run_gen():
-        try:
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                None, run_generation, actual_prompt, size_value, model_value, ref_images
-            )
-            generation_result["data"] = result
-        except Exception as exc:
-            generation_result["error"] = str(exc)
-        finally:
-            generation_done.set()
+    # Generate each item
+    for gen_index in range(amount_value):
+        start_time = time.time()
+        generation_done = asyncio.Event()
+        generation_result = {"data": None, "error": None}
 
-    async def update_timer():
-        while not generation_done.is_set():
-            await asyncio.sleep(3)
-            if generation_done.is_set():
-                break
-            elapsed = time.time() - start_time
+        async def run_gen():
             try:
-                progress_embed = build_progress_embed(prompt, size_label, elapsed, model_label, model_value, len(ref_images))
-                await status_msg.edit(embed=progress_embed)
-            except Exception:
-                pass
+                loop = asyncio.get_event_loop()
+                result = await loop.run_in_executor(
+                    None, run_generation, actual_prompt, size_value, model_value, ref_images
+                )
+                generation_result["data"] = result
+            except Exception as exc:
+                generation_result["error"] = str(exc)
+            finally:
+                generation_done.set()
 
-    asyncio.create_task(run_gen())
-    timer_task = asyncio.create_task(update_timer())
+        async def update_timer():
+            while not generation_done.is_set():
+                await asyncio.sleep(3)
+                if generation_done.is_set():
+                    break
+                elapsed = time.time() - start_time
+                try:
+                    progress_embed = build_progress_embed(prompt, size_label, elapsed, model_label, model_value, len(ref_images), gen_index + 1, amount_value)
+                    await status_msg.edit(embed=progress_embed)
+                except Exception:
+                    pass
 
-    await generation_done.wait()
-    timer_task.cancel()
-    try:
-        await timer_task
-    except asyncio.CancelledError:
-        pass
+        asyncio.create_task(run_gen())
+        timer_task = asyncio.create_task(update_timer())
 
-    total_time = time.time() - start_time
+        await generation_done.wait()
+        timer_task.cancel()
+        try:
+            await timer_task
+        except asyncio.CancelledError:
+            pass
 
-    if generation_result["error"]:
-        error_embed = build_error_embed(generation_result["error"], prompt, size_label, model_label, model_value, ref_images)
+        if generation_result["error"]:
+            all_results.append({
+                "success": False,
+                "error": generation_result["error"]
+            })
+        else:
+            result_data = generation_result["data"]
+            all_results.append({
+                "success": True,
+                "url": result_data.get("url"),
+                "download_url": result_data.get("download_url") or result_data.get("url")
+            })
+
+    # After all generations complete
+    total_time = time.time() - total_start_time
+    successful_results = [r for r in all_results if r.get("success")]
+    failed_count = len([r for r in all_results if not r.get("success")])
+    
+    if not successful_results:
+        error_embed = build_error_embed(all_results[0].get("error", "All generations failed"), prompt, size_label, model_label, model_value, ref_images)
         await status_msg.edit(embed=error_embed)
         return
 
-    result = generation_result["data"]
-    success_embed = build_success_embed(prompt, size_label, total_time, model_label, model_value, ref_images)
+    # Build success embed with all results
+    success_embed = build_success_embed(prompt, size_label, total_time, model_label, model_value, ref_images, all_results, failed_count)
 
-    media_file = None
-    download_url = result.get("download_url") or result.get("url")
-    if download_url:
-        try:
-            # Use the custom session that ignores SSL verification
-            response = download_session.get(download_url, timeout=60)
-            response.raise_for_status()
-            media_bytes = response.content
-            
-            # Determine if it's an image or video
-            is_image = model_value not in VIDEO_MODELS or model_value == "nanobanana_2"
-            ext = "png" if is_image else "mp4"
-            filename = f"generated_media.{ext}"
-            
-            # For videos, check file size (Discord has 25MB limit for attachments)
-            if not is_image and len(media_bytes) > 25 * 1024 * 1024:
-                # Video too large for Discord, just provide download link
-                success_embed.add_field(
-                    name="📥 Download",
-                    value=f"[Click to download video]({download_url})",
-                    inline=False,
-                )
-            else:
-                media_file = discord.File(io.BytesIO(media_bytes), filename=filename)
-                if is_image:
-                    success_embed.set_image(url=f"attachment://{filename}")
-                else:
-                    success_embed.add_field(
-                        name="📥 Download",
-                        value=f"[Click to download video]({download_url})",
-                        inline=False,
-                    )
-        except Exception as dl_err:
-            print(f"Download error: {dl_err}")
-            if download_url:
-                success_embed.add_field(
-                    name="📥 Download",
-                    value=f"[Click to download]({download_url})",
-                    inline=False,
-                )
+    # Try to attach the first successful media if only one and it's small
+    media_files = []
+    if len(successful_results) == 1:
+        result = successful_results[0]
+        download_url = result.get("download_url") or result.get("url")
+        if download_url:
+            try:
+                response = download_session.get(download_url, timeout=60)
+                response.raise_for_status()
+                media_bytes = response.content
+                
+                is_image = model_value not in VIDEO_MODELS or model_value == "nanobanana_2"
+                ext = "png" if is_image else "mp4"
+                filename = f"generated_media.{ext}"
+                
+                if len(media_bytes) <= 25 * 1024 * 1024:  # Discord 25MB limit
+                    media_files.append(discord.File(io.BytesIO(media_bytes), filename=filename))
+                    if is_image:
+                        success_embed.set_image(url=f"attachment://{filename}")
+            except Exception as dl_err:
+                print(f"Download error: {dl_err}")
 
-    if media_file:
-        await status_msg.edit(embed=success_embed, attachments=[media_file])
+    if media_files:
+        await status_msg.edit(embed=success_embed, attachments=media_files)
     else:
         await status_msg.edit(embed=success_embed)
 
     await interaction.followup.send(
-        f"{interaction.user.mention} Media ready! Took **{format_duration(total_time)}**."
+        f"{interaction.user.mention} {len(successful_results)}/{amount_value} media ready! Generated in **{format_duration(total_time)}**."
     )
 
 @discord.app_commands.allowed_installs(guilds=True, users=True)
