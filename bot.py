@@ -1305,7 +1305,7 @@ def get_stage(elapsed, stages):
             current = stage
     return current
 
-def build_progress_embed(prompt, size_label, elapsed, model_label, model_value="", ref_count=0, current_gen=0, total_gen=0):
+def build_progress_embed(prompt, size_label, elapsed, model_label, model_value="", ref_count=0):
     if model_value == "nanobanana_2":
         stages = NB2_PROGRESS_STAGES
         estimated_total = 60
@@ -1336,8 +1336,6 @@ def build_progress_embed(prompt, size_label, elapsed, model_label, model_value="
     embed.add_field(name="🧠 Model", value=f"`{model_label}`", inline=True)
     if ref_count > 0:
         embed.add_field(name="🖼️ Reference Images", value=f"`{ref_count} image(s)`", inline=True)
-    if total_gen > 1:
-        embed.add_field(name="🎲 Progress", value=f"`Generating {current_gen}/{total_gen}`", inline=True)
     embed.add_field(name="⏱️ Elapsed", value=f"`{format_duration(elapsed)}`", inline=True)
     embed.add_field(name=f"{stage['emoji']} Status", value=f"**{stage['label']}**", inline=True)
     embed.add_field(name="Progress", value=f"`{bar}` {int(progress * 100)}%", inline=False)
@@ -1563,79 +1561,85 @@ async def generate(
             return
 
     # Show initial progress embed
-    start_embed = build_progress_embed(prompt, size_label, 0, model_label, model_value, len(ref_images), 0, amount_value)
+    start_embed = build_progress_embed(prompt, size_label, 0, model_label, model_value, len(ref_images))
+    if amount_value > 1:
+        start_embed.add_field(name="🎲 Amount", value=f"`Generating {amount_value} media concurrently...`", inline=True)
     await interaction.response.send_message(embed=start_embed)
     status_msg = await interaction.original_response()
 
-    # Storage for all results
-    all_results = []  # Each will be dict with "success", "url", "download_url", "error"
+    # Generate all items concurrently using asyncio.gather
     total_start_time = time.time()
-
-    # Generate each item
-    for gen_index in range(amount_value):
-        start_time = time.time()
-        generation_done = asyncio.Event()
-        generation_result = {"data": None, "error": None}
-
-        async def run_gen():
-            try:
-                loop = asyncio.get_event_loop()
-                result = await loop.run_in_executor(
-                    None, run_generation, actual_prompt, size_value, model_value, ref_images
-                )
-                generation_result["data"] = result
-            except Exception as exc:
-                generation_result["error"] = str(exc)
-            finally:
-                generation_done.set()
-
-        async def update_timer():
-            while not generation_done.is_set():
-                await asyncio.sleep(3)
-                if generation_done.is_set():
-                    break
-                elapsed = time.time() - start_time
-                try:
-                    progress_embed = build_progress_embed(prompt, size_label, elapsed, model_label, model_value, len(ref_images), gen_index + 1, amount_value)
-                    await status_msg.edit(embed=progress_embed)
-                except Exception:
-                    pass
-
-        asyncio.create_task(run_gen())
-        timer_task = asyncio.create_task(update_timer())
-
-        await generation_done.wait()
-        timer_task.cancel()
+    
+    async def generate_one(index):
+        """Generate a single media item"""
         try:
-            await timer_task
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None, run_generation, actual_prompt, size_value, model_value, ref_images
+            )
+            return {
+                "success": True,
+                "url": result.get("url"),
+                "download_url": result.get("download_url") or result.get("url"),
+                "index": index
+            }
+        except Exception as exc:
+            return {
+                "success": False,
+                "error": str(exc),
+                "index": index
+            }
+    
+    # Create tasks for all generations
+    tasks = [generate_one(i + 1) for i in range(amount_value)]
+    
+    # Create progress update task
+    progress_update_task = None
+    progress_running = True
+    
+    async def update_progress():
+        """Update the progress embed periodically while generation runs"""
+        while progress_running:
+            await asyncio.sleep(5)
+            elapsed = time.time() - total_start_time
+            try:
+                progress_embed = build_progress_embed(prompt, size_label, elapsed, model_label, model_value, len(ref_images))
+                if amount_value > 1:
+                    progress_embed.add_field(name="🎲 Status", value=f"`Generating {amount_value} media concurrently...`", inline=True)
+                await status_msg.edit(embed=progress_embed)
+            except Exception:
+                pass
+    
+    # Start progress updates if generating multiple items
+    if amount_value > 1:
+        progress_update_task = asyncio.create_task(update_progress())
+    
+    # Wait for all generations to complete concurrently
+    results = await asyncio.gather(*tasks)
+    
+    # Stop progress updates
+    progress_running = False
+    if progress_update_task:
+        progress_update_task.cancel()
+        try:
+            await progress_update_task
         except asyncio.CancelledError:
             pass
-
-        if generation_result["error"]:
-            all_results.append({
-                "success": False,
-                "error": generation_result["error"]
-            })
-        else:
-            result_data = generation_result["data"]
-            all_results.append({
-                "success": True,
-                "url": result_data.get("url"),
-                "download_url": result_data.get("download_url") or result_data.get("url")
-            })
-
-    # After all generations complete
+    
+    # Sort results by index
+    results = sorted(results, key=lambda x: x.get("index", 0))
+    
     total_time = time.time() - total_start_time
-    successful_results = [r for r in all_results if r.get("success")]
-    failed_count = len([r for r in all_results if not r.get("success")])
+    successful_results = [r for r in results if r.get("success")]
+    failed_count = len([r for r in results if not r.get("success")])
     
     if not successful_results:
-        error_embed = build_error_embed(all_results[0].get("error", "All generations failed"), prompt, size_label, model_label, model_value, ref_images)
+        error_embed = build_error_embed(results[0].get("error", "All generations failed"), prompt, size_label, model_label, model_value, ref_images)
         await status_msg.edit(embed=error_embed)
         return
 
     # Build success embed with all results
-    success_embed = build_success_embed(prompt, size_label, total_time, model_label, model_value, ref_images, all_results, failed_count)
+    success_embed = build_success_embed(prompt, size_label, total_time, model_label, model_value, ref_images, results, failed_count)
 
     # Try to attach the first successful media if only one and it's small
     media_files = []
