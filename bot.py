@@ -34,7 +34,6 @@ COGNITO_CLIENT_ID = "1kvg8re5bgu9ljqnnkjosu477k"
 USER_POOL_ID = "eu-west-1_7hEawdalF"
 GUERRILLA_API = "https://api.guerrillamail.com/ajax.php"
 OREATE_BASE = "https://www.oreateai.com"
-ZYLOXTUBE_API = "https://zyloxtube--cfd98ae43d7511f1962942b51c65c3df.web.val.run/api/generate"
 
 VALID_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff"}
 VIDEO_SIZES = ["1280x720", "720x1280"]
@@ -61,9 +60,6 @@ tree = app_commands.CommandTree(client)
 download_session = requests.Session()
 download_session.mount('https://', SSLAdapter())
 download_session.verify = False
-
-# Owner ID
-OWNER_ID = 1348735671044673636
 
 # ─── إعداد خادم الويب (لـ Render) ─────────────────────────────────────────────
 app = Flask(__name__)
@@ -1247,46 +1243,16 @@ def run_seedance2_generation(prompt: str) -> dict:
         "download_url": video_url,
     }
 
-# ─── Bypass mode for Sora ─────────────────────────────────────────────────────
-
-async def get_bypass_prompt(original_prompt: str) -> str:
-    """Send prompt to ZyloxTube API and get transformed prompt"""
-    try:
-        response = requests.get(
-            f"{ZYLOXTUBE_API}?prompt={requests.utils.quote(original_prompt)}",
-            timeout=30
-        )
-        response.raise_for_status()
-        # The API returns a text response
-        transformed_prompt = response.text.strip()
-        return transformed_prompt
-    except Exception as e:
-        print(f"Bypass API error: {e}")
-        raise RuntimeError(f"Failed to get bypass prompt: {str(e)}")
-
 # ─── Dispatch ─────────────────────────────────────────────────────────────────
 
-async def run_generation_with_bypass(prompt: str, size: str, model: str, ref_images: list = None, bypass_mode: bool = False) -> dict:
-    """Run generation with optional bypass mode for Sora"""
-    actual_prompt = prompt
-    
-    if bypass_mode:
-        if model != "sora_2":
-            raise RuntimeError("Bypass mode can ONLY be enabled with Sora model!")
-        
-        # Get transformed prompt from ZyloxTube API
-        actual_prompt = await get_bypass_prompt(prompt)
-        print(f"Original prompt: {prompt}")
-        print(f"Transformed prompt: {actual_prompt}")
-    
-    # Run the actual generation
+def run_generation(prompt: str, size: str, model: str, ref_images: list = None) -> dict:
     if model == "nanobanana_2":
-        return run_oreate_generation(actual_prompt, size, ref_images or [])
+        return run_oreate_generation(prompt, size, ref_images or [])
     if model == "seedance_2":
-        return run_seedance2_generation(actual_prompt)
+        return run_seedance2_generation(prompt)
     if model == "wan_2_6":
-        return run_wan26_generation(actual_prompt, size, ref_images or [])
-    return run_synthesia_generation(actual_prompt, size, model)
+        return run_wan26_generation(prompt, size, ref_images or [])
+    return run_synthesia_generation(prompt, size, model)
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -1339,7 +1305,7 @@ def get_stage(elapsed, stages):
             current = stage
     return current
 
-def build_progress_embed(prompt, size_label, elapsed, model_label, model_value="", ref_count=0, amount=1, completed=0, bypass_mode=False):
+def build_progress_embed(prompt, size_label, elapsed, model_label, model_value="", ref_count=0, amount=1, completed=0):
     if model_value == "nanobanana_2":
         stages = NB2_PROGRESS_STAGES
         estimated_total = 60
@@ -1368,8 +1334,6 @@ def build_progress_embed(prompt, size_label, elapsed, model_label, model_value="
     if size_label:
         embed.add_field(name="📏 Size", value=f"`{size_label}`", inline=True)
     embed.add_field(name="🧠 Model", value=f"`{model_label}`", inline=True)
-    if bypass_mode:
-        embed.add_field(name="🔓 Bypass Mode", value="`Enabled`", inline=True)
     if ref_count > 0:
         embed.add_field(name="🖼️ Reference Images", value=f"`{ref_count} image(s)`", inline=True)
     if amount > 1:
@@ -1380,21 +1344,16 @@ def build_progress_embed(prompt, size_label, elapsed, model_label, model_value="
     embed.set_footer(text=f"Powered by {model_label}  |  Please wait...")
     return embed
 
-def build_results_embed(prompt, size_label, model_label, model_value="", ref_images=None, completed_results=None, total=0, bypass_mode=False):
+def build_results_embed(prompt, size_label, model_label, model_value="", ref_images=None, completed_results=None, total=0):
     embed = discord.Embed(
         title="🎬  Media Generation In Progress",
         color=PROGRESS_COLOR,
         timestamp=discord.utils.utcnow(),
     )
-    
-    # Show the prompt (API prompt in bypass mode, user prompt otherwise)
     embed.add_field(name="📝 Prompt", value=f"```{prompt[:200]}```", inline=False)
-    
     if size_label:
         embed.add_field(name="📏 Size", value=f"`{size_label}`", inline=True)
     embed.add_field(name="🧠 Model", value=f"`{model_label}`", inline=True)
-    if bypass_mode:
-        embed.add_field(name="🔓 Bypass Mode", value="`Enabled`", inline=True)
     embed.add_field(name="🎲 Status", value=f"`{len(completed_results)}/{total} completed`", inline=True)
     
     # Add reference images section if any
@@ -1423,21 +1382,16 @@ def build_results_embed(prompt, size_label, model_label, model_value="", ref_ima
     embed.set_footer(text=f"Powered by {model_label}  |  Generating more...")
     return embed
 
-def build_final_embed(prompt, size_label, duration, model_label, model_value="", ref_images=None, results=None, failed_count=0, bypass_mode=False):
+def build_final_embed(prompt, size_label, duration, model_label, model_value="", ref_images=None, results=None, failed_count=0):
     embed = discord.Embed(
         title="✅  Media Generation Complete!",
         color=SUCCESS_COLOR,
         timestamp=discord.utils.utcnow(),
     )
-    
-    # Show the prompt (API prompt in bypass mode, user prompt otherwise)
     embed.add_field(name="📝 Prompt", value=f"```{prompt[:200]}```", inline=False)
-    
     if size_label:
         embed.add_field(name="📏 Size", value=f"`{size_label}`", inline=True)
     embed.add_field(name="🧠 Model", value=f"`{model_label}`", inline=True)
-    if bypass_mode:
-        embed.add_field(name="🔓 Bypass Mode", value="`Enabled`", inline=True)
     embed.add_field(name="⏱️ Time Taken", value=f"`{format_duration(duration)}`", inline=True)
     
     # Add reference images section if any
@@ -1466,7 +1420,7 @@ def build_final_embed(prompt, size_label, duration, model_label, model_value="",
     embed.set_footer(text=f"Powered by {model_label}")
     return embed
 
-def build_error_embed(error_msg, prompt, size_label, model_label, model_value="", ref_images=None, bypass_mode=False):
+def build_error_embed(error_msg, prompt, size_label, model_label, model_value="", ref_images=None):
     embed = discord.Embed(
         title="❌  Generation Failed",
         color=ERROR_COLOR,
@@ -1476,8 +1430,6 @@ def build_error_embed(error_msg, prompt, size_label, model_label, model_value=""
     if size_label:
         embed.add_field(name="📏 Size", value=f"`{size_label}`", inline=True)
     embed.add_field(name="🧠 Model", value=f"`{model_label}`", inline=True)
-    if bypass_mode:
-        embed.add_field(name="🔓 Bypass Mode", value="`Enabled`", inline=True)
     
     # Add reference images section if any
     if ref_images and len(ref_images) > 0:
@@ -1526,11 +1478,6 @@ amount_choices = [
     app_commands.Choice(name="6", value=6),
 ]
 
-bypass_choices = [
-    app_commands.Choice(name="Off", value="off"),
-    app_commands.Choice(name="On", value="on"),
-]
-
 MODEL_LABELS = {
     "nanobanana_pro": "Nano Banana Pro",
     "nanobanana_2":   "Nano Banana 2",
@@ -1550,13 +1497,12 @@ async def on_ready():
 
 @discord.app_commands.allowed_installs(guilds=True, users=True)
 @discord.app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
-@tree.command(name="generate", description="Generate AI media (SpongeBob may not work)")
+@tree.command(name="generate", description="Generate AI media")
 @app_commands.describe(
     prompt="What the media should show",
     model="AI model to use (default: Nano Banana Pro)",
     size="Video resolution",
     amount="Number of media to generate (1-6)",
-    bypass="Bypass mode for Sora only - transforms your prompt (SpongeBob may not work)",
     ref1="Reference image 1 (Nano Banana 2 / Wan 2.6 only)",
     ref2="Reference image 2",
     ref3="Reference image 3",
@@ -1567,14 +1513,13 @@ async def on_ready():
     ref8="Reference image 8",
     ref9="Reference image 9",
 )
-@app_commands.choices(size=size_choices, model=model_choices, amount=amount_choices, bypass=bypass_choices)
+@app_commands.choices(size=size_choices, model=model_choices, amount=amount_choices)
 async def generate(
     interaction: discord.Interaction,
     prompt: str,
     model: app_commands.Choice[str] = None,
     size: app_commands.Choice[str] = None,
     amount: app_commands.Choice[int] = None,
-    bypass: app_commands.Choice[str] = None,
     ref1: discord.Attachment = None,
     ref2: discord.Attachment = None,
     ref3: discord.Attachment = None,
@@ -1592,19 +1537,8 @@ async def generate(
     if amount_value > 6:
         amount_value = 6
     
-    # Parse bypass mode
-    bypass_mode = bypass.value == "on" if bypass else False
-    
     model_value = model.value if model else "nanobanana_pro"
     model_label = MODEL_LABELS.get(model_value, model_value)
-
-    # Check bypass mode compatibility
-    if bypass_mode and model_value != "sora_2":
-        await interaction.response.send_message(
-            "❌ **Bypass mode can ONLY be enabled with Sora model!**\nPlease select `Sora 2` as your model or turn off bypass mode.",
-            ephemeral=True
-        )
-        return
 
     raw_size = size.value if size else None
 
@@ -1628,21 +1562,6 @@ async def generate(
         size_label = SIZE_LABELS.get(size_value, size_value)
 
     actual_prompt = prompt
-    display_prompt = prompt
-
-    # If bypass mode is on, get transformed prompt
-    if bypass_mode:
-        try:
-            # Get transformed prompt from API
-            transformed_prompt = await get_bypass_prompt(prompt)
-            actual_prompt = transformed_prompt
-            display_prompt = transformed_prompt  # Show API prompt instead of user prompt
-        except Exception as e:
-            await interaction.response.send_message(
-                f"❌ Failed to get bypass prompt: {str(e)}",
-                ephemeral=True
-            )
-            return
 
     ref_images = []
     # Allow reference images for Nano Banana 2 AND Wan 2.6
@@ -1662,7 +1581,7 @@ async def generate(
         if bad_refs:
             await interaction.response.send_message(
                 f"⚠️ Invalid images: `{'`, `'.join(bad_refs)}`",
-                ephemeral=True
+                ephemeral=True,
             )
             return
 
@@ -1678,12 +1597,12 @@ async def generate(
         if any(r is not None for r in [ref1, ref2, ref3, ref4, ref5, ref6, ref7, ref8, ref9]):
             await interaction.response.send_message(
                 "⚠️ Reference images only work with **Nano Banana 2** or **Wan 2.6**.",
-                ephemeral=True
+                ephemeral=True,
             )
             return
 
-    # Send initial progress embed INSTANTLY (this is the loading bar message)
-    start_embed = build_progress_embed(display_prompt, size_label, 0, model_label, model_value, len(ref_images), amount_value, 0, bypass_mode)
+    # Show initial progress embed
+    start_embed = build_progress_embed(prompt, size_label, 0, model_label, model_value, len(ref_images), amount_value, 0)
     await interaction.response.send_message(embed=start_embed)
     status_msg = await interaction.original_response()
 
@@ -1692,35 +1611,13 @@ async def generate(
     results_lock = asyncio.Lock()
     total_start_time = time.time()
     
-    # Progress update task
-    progress_running = True
-    
-    async def update_progress():
-        """Update the progress embed periodically"""
-        while progress_running:
-            await asyncio.sleep(3)
-            elapsed = time.time() - total_start_time
-            try:
-                # Only update if still generating
-                if len(completed_results) < amount_value:
-                    progress_embed = build_progress_embed(display_prompt, size_label, elapsed, model_label, model_value, len(ref_images), amount_value, len(completed_results), bypass_mode)
-                    await status_msg.edit(embed=progress_embed)
-            except Exception:
-                pass
-    
     async def generate_one(index):
         """Generate a single media item and update results immediately when done"""
         try:
             loop = asyncio.get_event_loop()
-            if model_value == "nanobanana_2":
-                result = await loop.run_in_executor(None, run_oreate_generation, actual_prompt, size_value, ref_images)
-            elif model_value == "seedance_2":
-                result = await loop.run_in_executor(None, run_seedance2_generation, actual_prompt)
-            elif model_value == "wan_2_6":
-                result = await loop.run_in_executor(None, run_wan26_generation, actual_prompt, size_value, ref_images)
-            else:
-                result = await loop.run_in_executor(None, run_synthesia_generation, actual_prompt, size_value, model_value)
-            
+            result = await loop.run_in_executor(
+                None, run_generation, actual_prompt, size_value, model_value, ref_images
+            )
             result_data = {
                 "success": True,
                 "url": result.get("url"),
@@ -1740,29 +1637,18 @@ async def generate(
             completed_results.sort(key=lambda x: x.get("index", 0))
             
             # Update the embed with current results
+            elapsed = time.time() - total_start_time
+            
             if len(completed_results) < amount_value:
                 # Still generating - show results embed with completed items
-                results_embed = build_results_embed(display_prompt, size_label, model_label, model_value, ref_images, completed_results, amount_value, bypass_mode)
+                results_embed = build_results_embed(prompt, size_label, model_label, model_value, ref_images, completed_results, amount_value)
                 await status_msg.edit(embed=results_embed)
             else:
                 # All done - show final embed
                 total_time = time.time() - total_start_time
                 successful_count = len([r for r in completed_results if r.get("success")])
                 failed_count = amount_value - successful_count
-                
-                # If all failed (0/1 or 0/amount), show error embed
-                if successful_count == 0:
-                    error_msg = "All generations failed"
-                    if len(completed_results) > 0 and completed_results[0].get("error"):
-                        error_msg = completed_results[0].get("error")
-                    error_embed = build_error_embed(error_msg, display_prompt, size_label, model_label, model_value, ref_images, bypass_mode)
-                    await status_msg.edit(embed=error_embed)
-                    await interaction.followup.send(
-                        f"{interaction.user.mention} ❌ **0/{amount_value}** media generated! All failed."
-                    )
-                    return
-                
-                final_embed = build_final_embed(display_prompt, size_label, total_time, model_label, model_value, ref_images, completed_results, failed_count, bypass_mode)
+                final_embed = build_final_embed(prompt, size_label, total_time, model_label, model_value, ref_images, completed_results, failed_count)
                 
                 # Try to attach first media if only one successful
                 media_files = []
@@ -1792,29 +1678,17 @@ async def generate(
                     await status_msg.edit(embed=final_embed)
                 
                 # Send final ping message
-                bypass_text = " 🔓" if bypass_mode else ""
                 await interaction.followup.send(
-                    f"{interaction.user.mention} ✅ **{successful_count}/{amount_value}** media ready! Generated in **{format_duration(total_time)}**{bypass_text}."
+                    f"{interaction.user.mention} ✅ **{successful_count}/{amount_value}** media ready! Generated in **{format_duration(total_time)}**."
                 )
             
             return result_data
-    
-    # Start progress update task
-    progress_task = asyncio.create_task(update_progress())
     
     # Create and run all tasks CONCURRENTLY (at the same time)
     tasks = [generate_one(i + 1) for i in range(amount_value)]
     
     # Wait for all tasks to complete
     await asyncio.gather(*tasks)
-    
-    # Stop progress updates
-    progress_running = False
-    progress_task.cancel()
-    try:
-        await progress_task
-    except asyncio.CancelledError:
-        pass
 
 @discord.app_commands.allowed_installs(guilds=True, users=True)
 @discord.app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
@@ -1873,7 +1747,7 @@ async def models_cmd(interaction: discord.Interaction):
     embed.add_field(
         name="Video models (with audio)",
         value=(
-            "`Sora 2` — OpenAI Sora v2 (Bypass mode available)\n"
+            "`Sora 2` — OpenAI Sora v2\n"
             "`Veo 3.1` — Google Veo 3.1\n"
             "`Veo 3.1 Fast` — Google Veo 3.1 (faster)\n"
             "`Seedance 2` — Seedance v2\n"
