@@ -1628,33 +1628,21 @@ async def generate(
         size_label = SIZE_LABELS.get(size_value, size_value)
 
     actual_prompt = prompt
-    original_prompt = prompt
-    transformed_prompt = None
     display_prompt = prompt
 
     # If bypass mode is on, get transformed prompt
     if bypass_mode:
         try:
-            # Show initial "getting bypass prompt" message
-            await interaction.response.send_message(f"🔓 Bypass mode enabled for Sora! Transforming your prompt... <a:loading:>", ephemeral=False)
-            status_msg = await interaction.original_response()
-            
+            # Get transformed prompt from API
             transformed_prompt = await get_bypass_prompt(prompt)
             actual_prompt = transformed_prompt
             display_prompt = transformed_prompt  # Show API prompt instead of user prompt
-            
-            # Update status message
-            await status_msg.edit(content=f"🔓 Bypass mode enabled! Prompt transformed. Starting generation...")
-            
         except Exception as e:
             await interaction.response.send_message(
                 f"❌ Failed to get bypass prompt: {str(e)}",
                 ephemeral=True
             )
             return
-    else:
-        await interaction.response.send_message(f"Starting generation...", ephemeral=False)
-        status_msg = await interaction.original_response()
 
     ref_images = []
     # Allow reference images for Nano Banana 2 AND Wan 2.6
@@ -1672,7 +1660,10 @@ async def generate(
                 ref_images.append((attachment, fname, ext))
 
         if bad_refs:
-            await status_msg.edit(content=f"⚠️ Invalid images: `{'`, `'.join(bad_refs)}`")
+            await interaction.response.send_message(
+                f"⚠️ Invalid images: `{'`, `'.join(bad_refs)}`",
+                ephemeral=True
+            )
             return
 
         downloaded = []
@@ -1685,29 +1676,51 @@ async def generate(
         ref_images = downloaded
     else:
         if any(r is not None for r in [ref1, ref2, ref3, ref4, ref5, ref6, ref7, ref8, ref9]):
-            await status_msg.edit(content="⚠️ Reference images only work with **Nano Banana 2** or **Wan 2.6**.")
+            await interaction.response.send_message(
+                "⚠️ Reference images only work with **Nano Banana 2** or **Wan 2.6**.",
+                ephemeral=True
+            )
             return
 
-    # Show initial progress embed
+    # Send initial progress embed INSTANTLY (this is the loading bar message)
     start_embed = build_progress_embed(display_prompt, size_label, 0, model_label, model_value, len(ref_images), amount_value, 0, bypass_mode)
-    await status_msg.edit(embed=start_embed)
+    await interaction.response.send_message(embed=start_embed)
+    status_msg = await interaction.original_response()
 
     # Storage for results
     completed_results = []
     results_lock = asyncio.Lock()
     total_start_time = time.time()
     
+    # Progress update task
+    progress_running = True
+    
+    async def update_progress():
+        """Update the progress embed periodically"""
+        while progress_running:
+            await asyncio.sleep(3)
+            elapsed = time.time() - total_start_time
+            try:
+                # Only update if still generating
+                if len(completed_results) < amount_value:
+                    progress_embed = build_progress_embed(display_prompt, size_label, elapsed, model_label, model_value, len(ref_images), amount_value, len(completed_results), bypass_mode)
+                    await status_msg.edit(embed=progress_embed)
+            except Exception:
+                pass
+    
     async def generate_one(index):
         """Generate a single media item and update results immediately when done"""
         try:
             loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                None, 
-                lambda: run_synthesia_generation(actual_prompt, size_value, model_value) if model_value != "nanobanana_2" and model_value != "seedance_2" and model_value != "wan_2_6" else
-                (run_oreate_generation(actual_prompt, size_value, ref_images) if model_value == "nanobanana_2" else
-                 (run_seedance2_generation(actual_prompt) if model_value == "seedance_2" else
-                  run_wan26_generation(actual_prompt, size_value, ref_images)))
-            )
+            if model_value == "nanobanana_2":
+                result = await loop.run_in_executor(None, run_oreate_generation, actual_prompt, size_value, ref_images)
+            elif model_value == "seedance_2":
+                result = await loop.run_in_executor(None, run_seedance2_generation, actual_prompt)
+            elif model_value == "wan_2_6":
+                result = await loop.run_in_executor(None, run_wan26_generation, actual_prompt, size_value, ref_images)
+            else:
+                result = await loop.run_in_executor(None, run_synthesia_generation, actual_prompt, size_value, model_value)
+            
             result_data = {
                 "success": True,
                 "url": result.get("url"),
@@ -1727,8 +1740,6 @@ async def generate(
             completed_results.sort(key=lambda x: x.get("index", 0))
             
             # Update the embed with current results
-            elapsed = time.time() - total_start_time
-            
             if len(completed_results) < amount_value:
                 # Still generating - show results embed with completed items
                 results_embed = build_results_embed(display_prompt, size_label, model_label, model_value, ref_images, completed_results, amount_value, bypass_mode)
@@ -1788,11 +1799,22 @@ async def generate(
             
             return result_data
     
+    # Start progress update task
+    progress_task = asyncio.create_task(update_progress())
+    
     # Create and run all tasks CONCURRENTLY (at the same time)
     tasks = [generate_one(i + 1) for i in range(amount_value)]
     
     # Wait for all tasks to complete
     await asyncio.gather(*tasks)
+    
+    # Stop progress updates
+    progress_running = False
+    progress_task.cancel()
+    try:
+        await progress_task
+    except asyncio.CancelledError:
+        pass
 
 @discord.app_commands.allowed_installs(guilds=True, users=True)
 @discord.app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
