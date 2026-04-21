@@ -1380,22 +1380,15 @@ def build_progress_embed(prompt, size_label, elapsed, model_label, model_value="
     embed.set_footer(text=f"Powered by {model_label}  |  Please wait...")
     return embed
 
-def build_results_embed(prompt, size_label, model_label, model_value="", ref_images=None, completed_results=None, total=0, bypass_mode=False, original_prompt=None):
+def build_results_embed(prompt, size_label, model_label, model_value="", ref_images=None, completed_results=None, total=0, bypass_mode=False):
     embed = discord.Embed(
         title="🎬  Media Generation In Progress",
         color=PROGRESS_COLOR,
         timestamp=discord.utils.utcnow(),
     )
     
-    # Show prompt (hidden prompt for owner)
-    if original_prompt and original_prompt != prompt:
-        embed.add_field(name="📝 User Prompt", value=f"```{original_prompt[:200]}```", inline=False)
-        # Only show owner the transformed prompt
-        if completed_results and len(completed_results) > 0:
-            # This will be handled in the final embed
-            pass
-    else:
-        embed.add_field(name="📝 Prompt", value=f"```{prompt[:200]}```", inline=False)
+    # Show the prompt (API prompt in bypass mode, user prompt otherwise)
+    embed.add_field(name="📝 Prompt", value=f"```{prompt[:200]}```", inline=False)
     
     if size_label:
         embed.add_field(name="📏 Size", value=f"`{size_label}`", inline=True)
@@ -1430,18 +1423,15 @@ def build_results_embed(prompt, size_label, model_label, model_value="", ref_ima
     embed.set_footer(text=f"Powered by {model_label}  |  Generating more...")
     return embed
 
-def build_final_embed(prompt, size_label, duration, model_label, model_value="", ref_images=None, results=None, failed_count=0, bypass_mode=False, original_prompt=None, transformed_prompt=None):
+def build_final_embed(prompt, size_label, duration, model_label, model_value="", ref_images=None, results=None, failed_count=0, bypass_mode=False):
     embed = discord.Embed(
         title="✅  Media Generation Complete!",
         color=SUCCESS_COLOR,
         timestamp=discord.utils.utcnow(),
     )
     
-    # Show prompt (hidden prompt for owner)
-    if original_prompt:
-        embed.add_field(name="📝 User Prompt", value=f"```{original_prompt[:200]}```", inline=False)
-    else:
-        embed.add_field(name="📝 Prompt", value=f"```{prompt[:200]}```", inline=False)
+    # Show the prompt (API prompt in bypass mode, user prompt otherwise)
+    embed.add_field(name="📝 Prompt", value=f"```{prompt[:200]}```", inline=False)
     
     if size_label:
         embed.add_field(name="📏 Size", value=f"`{size_label}`", inline=True)
@@ -1640,6 +1630,7 @@ async def generate(
     actual_prompt = prompt
     original_prompt = prompt
     transformed_prompt = None
+    display_prompt = prompt
 
     # If bypass mode is on, get transformed prompt
     if bypass_mode:
@@ -1650,6 +1641,7 @@ async def generate(
             
             transformed_prompt = await get_bypass_prompt(prompt)
             actual_prompt = transformed_prompt
+            display_prompt = transformed_prompt  # Show API prompt instead of user prompt
             
             # Update status message
             await status_msg.edit(content=f"🔓 Bypass mode enabled! Prompt transformed. Starting generation...")
@@ -1661,7 +1653,7 @@ async def generate(
             )
             return
     else:
-        await interaction.response.send_message(f"🎬 Starting generation...", ephemeral=False)
+        await interaction.response.send_message(f"Starting generation...", ephemeral=False)
         status_msg = await interaction.original_response()
 
     ref_images = []
@@ -1697,7 +1689,7 @@ async def generate(
             return
 
     # Show initial progress embed
-    start_embed = build_progress_embed(original_prompt if bypass_mode else prompt, size_label, 0, model_label, model_value, len(ref_images), amount_value, 0, bypass_mode)
+    start_embed = build_progress_embed(display_prompt, size_label, 0, model_label, model_value, len(ref_images), amount_value, 0, bypass_mode)
     await status_msg.edit(embed=start_embed)
 
     # Storage for results
@@ -1739,12 +1731,7 @@ async def generate(
             
             if len(completed_results) < amount_value:
                 # Still generating - show results embed with completed items
-                results_embed = build_results_embed(
-                    actual_prompt if not bypass_mode else transformed_prompt, 
-                    size_label, model_label, model_value, ref_images, 
-                    completed_results, amount_value, bypass_mode, 
-                    original_prompt if bypass_mode else None
-                )
+                results_embed = build_results_embed(display_prompt, size_label, model_label, model_value, ref_images, completed_results, amount_value, bypass_mode)
                 await status_msg.edit(embed=results_embed)
             else:
                 # All done - show final embed
@@ -1752,18 +1739,19 @@ async def generate(
                 successful_count = len([r for r in completed_results if r.get("success")])
                 failed_count = amount_value - successful_count
                 
-                # For owner, show the transformed prompt in the final embed
-                final_embed = build_final_embed(
-                    actual_prompt if not bypass_mode else transformed_prompt, 
-                    size_label, total_time, model_label, model_value, 
-                    ref_images, completed_results, failed_count, bypass_mode,
-                    original_prompt if bypass_mode else None,
-                    transformed_prompt if bypass_mode else None
-                )
+                # If all failed (0/1 or 0/amount), show error embed
+                if successful_count == 0:
+                    error_msg = "All generations failed"
+                    if len(completed_results) > 0 and completed_results[0].get("error"):
+                        error_msg = completed_results[0].get("error")
+                    error_embed = build_error_embed(error_msg, display_prompt, size_label, model_label, model_value, ref_images, bypass_mode)
+                    await status_msg.edit(embed=error_embed)
+                    await interaction.followup.send(
+                        f"{interaction.user.mention} ❌ **0/{amount_value}** media generated! All failed."
+                    )
+                    return
                 
-                # Add owner-only field for transformed prompt if bypass mode was used
-                if bypass_mode and interaction.user.id == OWNER_ID:
-                    final_embed.add_field(name="🔒 Owner: Transformed Prompt", value=f"```{transformed_prompt[:500]}```", inline=False)
+                final_embed = build_final_embed(display_prompt, size_label, total_time, model_label, model_value, ref_images, completed_results, failed_count, bypass_mode)
                 
                 # Try to attach first media if only one successful
                 media_files = []
