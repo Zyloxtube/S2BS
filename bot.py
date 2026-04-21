@@ -1305,7 +1305,7 @@ def get_stage(elapsed, stages):
             current = stage
     return current
 
-def build_progress_embed(prompt, size_label, elapsed, model_label, model_value="", ref_count=0, amount=1):
+def build_progress_embed(prompt, size_label, elapsed, model_label, model_value="", ref_count=0, amount=1, completed=0):
     if model_value == "nanobanana_2":
         stages = NB2_PROGRESS_STAGES
         estimated_total = 60
@@ -1337,14 +1337,52 @@ def build_progress_embed(prompt, size_label, elapsed, model_label, model_value="
     if ref_count > 0:
         embed.add_field(name="🖼️ Reference Images", value=f"`{ref_count} image(s)`", inline=True)
     if amount > 1:
-        embed.add_field(name="🎲 Amount", value=f"`{amount} media (concurrent)`", inline=True)
+        embed.add_field(name="🎲 Progress", value=f"`{completed}/{amount} completed`", inline=True)
     embed.add_field(name="⏱️ Elapsed", value=f"`{format_duration(elapsed)}`", inline=True)
     embed.add_field(name=f"{stage['emoji']} Status", value=f"**{stage['label']}**", inline=True)
     embed.add_field(name="Progress", value=f"`{bar}` {int(progress * 100)}%", inline=False)
     embed.set_footer(text=f"Powered by {model_label}  |  Please wait...")
     return embed
 
-def build_success_embed(prompt, size_label, duration, model_label, model_value="", ref_images=None, results=None, failed_count=0):
+def build_results_embed(prompt, size_label, model_label, model_value="", ref_images=None, completed_results=None, total=0):
+    embed = discord.Embed(
+        title="🎬  Media Generation In Progress",
+        color=PROGRESS_COLOR,
+        timestamp=discord.utils.utcnow(),
+    )
+    embed.add_field(name="📝 Prompt", value=f"```{prompt[:200]}```", inline=False)
+    if size_label:
+        embed.add_field(name="📏 Size", value=f"`{size_label}`", inline=True)
+    embed.add_field(name="🧠 Model", value=f"`{model_label}`", inline=True)
+    embed.add_field(name="🎲 Status", value=f"`{len(completed_results)}/{total} completed`", inline=True)
+    
+    # Add reference images section if any
+    if ref_images and len(ref_images) > 0:
+        ref_text = ""
+        for idx, (_, filename, _) in enumerate(ref_images[:9], 1):
+            ref_text += f"📷 **Ref {idx}:** `{filename}`\n"
+        embed.add_field(name=f"🖼️ Reference Images ({len(ref_images)})", value=ref_text, inline=False)
+    
+    # Add completed results so far
+    if completed_results:
+        results_text = ""
+        for result in completed_results:
+            idx = result.get("index", 0)
+            if result.get("success"):
+                url = result.get("url") or result.get("download_url")
+                is_image = model_value not in VIDEO_MODELS or model_value == "nanobanana_2"
+                media_icon = "🖼️" if is_image else "🎬"
+                results_text += f"{media_icon} **Item {idx}:** [Click to view]({url})\n"
+            else:
+                results_text += f"❌ **Item {idx}:** failed ❌\n"
+        
+        if results_text:
+            embed.add_field(name=f"✅ Completed ({len(completed_results)}/{total})", value=results_text, inline=False)
+    
+    embed.set_footer(text=f"Powered by {model_label}  |  Generating more...")
+    return embed
+
+def build_final_embed(prompt, size_label, duration, model_label, model_value="", ref_images=None, results=None, failed_count=0):
     embed = discord.Embed(
         title="✅  Media Generation Complete!",
         color=SUCCESS_COLOR,
@@ -1366,7 +1404,8 @@ def build_success_embed(prompt, size_label, duration, model_label, model_value="
     # Add results section
     if results:
         results_text = ""
-        for idx, result in enumerate(results, 1):
+        for result in results:
+            idx = result.get("index", 0)
             if result.get("success"):
                 url = result.get("url") or result.get("download_url")
                 is_image = model_value not in VIDEO_MODELS or model_value == "nanobanana_2"
@@ -1563,111 +1602,93 @@ async def generate(
             return
 
     # Show initial progress embed
-    start_embed = build_progress_embed(prompt, size_label, 0, model_label, model_value, len(ref_images), amount_value)
+    start_embed = build_progress_embed(prompt, size_label, 0, model_label, model_value, len(ref_images), amount_value, 0)
     await interaction.response.send_message(embed=start_embed)
     status_msg = await interaction.original_response()
 
-    # Generate all items concurrently
+    # Storage for results
+    completed_results = []
+    results_lock = asyncio.Lock()
     total_start_time = time.time()
-    all_results = []
     
     async def generate_one(index):
-        """Generate a single media item and return result"""
+        """Generate a single media item and update results immediately when done"""
         try:
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
                 None, run_generation, actual_prompt, size_value, model_value, ref_images
             )
-            return {
+            result_data = {
                 "success": True,
                 "url": result.get("url"),
                 "download_url": result.get("download_url") or result.get("url"),
                 "index": index
             }
         except Exception as exc:
-            return {
+            result_data = {
                 "success": False,
                 "error": str(exc),
                 "index": index
             }
-    
-    # Progress update task
-    progress_running = True
-    
-    async def update_progress():
-        """Update the progress embed periodically"""
-        while progress_running:
-            await asyncio.sleep(3)
+        
+        # Update results and edit message immediately
+        async with results_lock:
+            completed_results.append(result_data)
+            completed_results.sort(key=lambda x: x.get("index", 0))
+            
+            # Update the embed with current results
             elapsed = time.time() - total_start_time
-            try:
-                progress_embed = build_progress_embed(prompt, size_label, elapsed, model_label, model_value, len(ref_images), amount_value)
-                await status_msg.edit(embed=progress_embed)
-            except Exception:
-                pass
+            
+            if len(completed_results) < amount_value:
+                # Still generating - show results embed with completed items
+                results_embed = build_results_embed(prompt, size_label, model_label, model_value, ref_images, completed_results, amount_value)
+                await status_msg.edit(embed=results_embed)
+            else:
+                # All done - show final embed
+                total_time = time.time() - total_start_time
+                successful_count = len([r for r in completed_results if r.get("success")])
+                failed_count = amount_value - successful_count
+                final_embed = build_final_embed(prompt, size_label, total_time, model_label, model_value, ref_images, completed_results, failed_count)
+                
+                # Try to attach first media if only one successful
+                media_files = []
+                if successful_count == 1:
+                    success_result = next(r for r in completed_results if r.get("success"))
+                    download_url = success_result.get("download_url") or success_result.get("url")
+                    if download_url:
+                        try:
+                            response = download_session.get(download_url, timeout=60)
+                            response.raise_for_status()
+                            media_bytes = response.content
+                            
+                            is_image = model_value not in VIDEO_MODELS or model_value == "nanobanana_2"
+                            ext = "png" if is_image else "mp4"
+                            filename = f"generated_media.{ext}"
+                            
+                            if len(media_bytes) <= 25 * 1024 * 1024:
+                                media_files.append(discord.File(io.BytesIO(media_bytes), filename=filename))
+                                if is_image:
+                                    final_embed.set_image(url=f"attachment://{filename}")
+                        except Exception as dl_err:
+                            print(f"Download error: {dl_err}")
+                
+                if media_files:
+                    await status_msg.edit(embed=final_embed, attachments=media_files)
+                else:
+                    await status_msg.edit(embed=final_embed)
+                
+                # Send final ping message
+                await interaction.followup.send(
+                    f"{interaction.user.mention} ✅ **{successful_count}/{amount_value}** media ready! Generated in **{format_duration(total_time)}**."
+                )
+            
+            return result_data
     
-    # Start progress updates
-    progress_task = asyncio.create_task(update_progress())
-    
-    # Create all tasks
+    # Create and run all tasks CONCURRENTLY (at the same time)
     tasks = [generate_one(i + 1) for i in range(amount_value)]
     
-    # Wait for all to complete
-    results = await asyncio.gather(*tasks)
-    
-    # Stop progress updates
-    progress_running = False
-    progress_task.cancel()
-    try:
-        await progress_task
-    except asyncio.CancelledError:
-        pass
-    
-    # Sort results by index
-    results = sorted(results, key=lambda x: x.get("index", 0))
-    
-    total_time = time.time() - total_start_time
-    successful_results = [r for r in results if r.get("success")]
-    failed_count = len([r for r in results if not r.get("success")])
-    
-    if not successful_results:
-        error_embed = build_error_embed(results[0].get("error", "All generations failed"), prompt, size_label, model_label, model_value, ref_images)
-        await status_msg.edit(embed=error_embed)
-        return
-
-    # Build success embed with all results
-    success_embed = build_success_embed(prompt, size_label, total_time, model_label, model_value, ref_images, results, failed_count)
-
-    # Try to attach the first successful media if only one
-    media_files = []
-    if len(successful_results) == 1:
-        result = successful_results[0]
-        download_url = result.get("download_url") or result.get("url")
-        if download_url:
-            try:
-                response = download_session.get(download_url, timeout=60)
-                response.raise_for_status()
-                media_bytes = response.content
-                
-                is_image = model_value not in VIDEO_MODELS or model_value == "nanobanana_2"
-                ext = "png" if is_image else "mp4"
-                filename = f"generated_media.{ext}"
-                
-                if len(media_bytes) <= 25 * 1024 * 1024:
-                    media_files.append(discord.File(io.BytesIO(media_bytes), filename=filename))
-                    if is_image:
-                        success_embed.set_image(url=f"attachment://{filename}")
-            except Exception as dl_err:
-                print(f"Download error: {dl_err}")
-
-    if media_files:
-        await status_msg.edit(embed=success_embed, attachments=media_files)
-    else:
-        await status_msg.edit(embed=success_embed)
-
-    # Send final ping message
-    await interaction.followup.send(
-        f"{interaction.user.mention} ✅ **{len(successful_results)}/{amount_value}** media ready! Generated in **{format_duration(total_time)}**."
-    )
+    # Wait for all tasks to complete
+    await asyncio.gather(*tasks)
 
 @discord.app_commands.allowed_installs(guilds=True, users=True)
 @discord.app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
