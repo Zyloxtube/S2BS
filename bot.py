@@ -34,6 +34,7 @@ COGNITO_CLIENT_ID = "1kvg8re5bgu9ljqnnkjosu477k"
 USER_POOL_ID = "eu-west-1_7hEawdalF"
 GUERRILLA_API = "https://api.guerrillamail.com/ajax.php"
 OREATE_BASE = "https://www.oreateai.com"
+GPTIMAGE2_BASE = "https://gptimage2.im"
 
 VALID_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff"}
 VIDEO_SIZES = ["1280x720", "720x1280"]
@@ -78,6 +79,234 @@ def run_web():
 def keep_alive():
     t = Thread(target=run_web)
     t.start()
+
+# ─── GPT Image 2 Automation ──────────────────────────────────────────────────
+
+class GPTImage2Automation:
+    def __init__(self):
+        self.base_url = GPTIMAGE2_BASE
+        self.session = requests.Session()
+        self.session.headers.update({
+            "accept": "*/*",
+            "accept-language": "en-US,en;q=0.9",
+            "content-type": "application/json",
+            "dnt": "1",
+            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36",
+            "origin": GPTIMAGE2_BASE,
+            "referer": f"{GPTIMAGE2_BASE}/ai-image-generator"
+        })
+        
+    def generate_credentials(self):
+        """Generate random email, password and username"""
+        letters = ''.join(random.choices(string.ascii_lowercase, k=6))
+        numbers = ''.join(random.choices(string.digits, k=2))
+        email = f"{letters}{numbers}@gmail.com"
+        
+        capitals = ''.join(random.choices(string.ascii_uppercase, k=2))
+        smalls = ''.join(random.choices(string.ascii_lowercase, k=4))
+        nums = ''.join(random.choices(string.digits, k=3))
+        password = f"{capitals}{smalls}{nums}"
+        
+        username = ''.join(random.choices(string.ascii_lowercase, k=4))
+        
+        return email, password, username
+    
+    def sign_up(self, email, password, name):
+        """Sign up using the simpler endpoint"""
+        url = f"{self.base_url}/api/auth/sign-up/email"
+        data = {"email": email, "password": password, "name": name}
+        response = self.session.post(url, json=data)
+        return response.json()
+    
+    def get_session(self, token):
+        """Get session info"""
+        url = f"{self.base_url}/api/auth/get-session"
+        self.session.cookies.set("__Secure-better-auth.session_token", token)
+        response = self.session.get(url)
+        return response.json()
+    
+    def get_user_info(self):
+        """Get user info including credits"""
+        url = f"{self.base_url}/api/user/get-user-info"
+        response = self.session.post(url)
+        return response.json()
+    
+    def generate_image_text_to_image(self, prompt):
+        """Generate image with text-to-image"""
+        url = f"{self.base_url}/api/ai/generate"
+        data = {
+            "mediaType": "image",
+            "scene": "text-to-image",
+            "provider": "fal",
+            "model": "openai/gpt-image-2",
+            "prompt": prompt,
+            "options": {
+                "image_size": "portrait_16_9",
+                "quality": "medium"
+            },
+            "credits": 5
+        }
+        response = self.session.post(url, json=data)
+        return response.json()
+    
+    def generate_image_image_to_image(self, prompt, image_urls):
+        """Generate image with image-to-image (reference images)"""
+        url = f"{self.base_url}/api/ai/generate"
+        data = {
+            "mediaType": "image",
+            "scene": "image-to-image",
+            "provider": "fal",
+            "model": "openai/gpt-image-2",
+            "prompt": prompt,
+            "options": {
+                "image_size": "auto",
+                "quality": "medium",
+                "image_urls": image_urls[:4]  # Max 4 images
+            },
+            "credits": 5
+        }
+        response = self.session.post(url, json=data)
+        return response.json()
+    
+    def query_task(self, task_uuid):
+        """Query task status"""
+        url = f"{self.base_url}/api/ai/query"
+        data = {"taskId": task_uuid}
+        response = self.session.post(url, json=data)
+        return response.json()
+    
+    def upload_image_to_gptimage2(self, image_bytes, filename):
+        """Upload reference image to GPTImage2 CDN"""
+        # First, get upload URL
+        upload_url_res = self.session.post(
+            f"{self.base_url}/api/upload/generate-url",
+            json={"filename": filename, "type": "image"}
+        )
+        upload_data = upload_url_res.json()
+        
+        if upload_data.get('code') != 0:
+            raise RuntimeError(f"Failed to get upload URL: {upload_data}")
+        
+        upload_url = upload_data['data']['url']
+        file_url = upload_data['data']['fileUrl']
+        
+        # Upload image
+        files = {'file': (filename, image_bytes, f'image/{filename.split(".")[-1]}')}
+        upload_response = requests.post(upload_url, files=files)
+        
+        if upload_response.status_code != 200:
+            raise RuntimeError(f"Failed to upload image: {upload_response.status_code}")
+        
+        return file_url
+    
+    def run(self, prompt, ref_images=None):
+        """Main execution flow with optional reference images"""
+        # Step 1: Generate credentials
+        email, password, username = self.generate_credentials()
+        
+        # Step 2: Sign up
+        signup_response = self.sign_up(email, password, username)
+        
+        if 'token' not in signup_response:
+            raise RuntimeError(f"Signup failed: {signup_response}")
+        
+        token = signup_response['token']
+        user = signup_response['user']
+        
+        # Step 3: Get session (automatically sets cookies)
+        session_data = self.get_session(token)
+        
+        if 'session' not in session_data:
+            raise RuntimeError(f"Session error: {session_data}")
+        
+        # Step 4: Get user info and credits
+        user_info = self.get_user_info()
+        
+        if user_info.get('code') != 0:
+            raise RuntimeError(f"Error getting user info: {user_info}")
+        
+        credits = user_info['data']['credits']['remainingCredits']
+        
+        if credits < 5:
+            raise RuntimeError(f"Not enough credits! Need 5, have {credits}")
+        
+        # Step 5: Upload reference images if any
+        image_urls = []
+        if ref_images:
+            for idx, (image_bytes, filename, file_ext) in enumerate(ref_images[:4]):  # Max 4 reference images
+                try:
+                    uploaded_url = self.upload_image_to_gptimage2(image_bytes, filename)
+                    image_urls.append(uploaded_url)
+                except Exception as e:
+                    print(f"Failed to upload reference image {idx+1}: {e}")
+        
+        # Step 6: Generate image
+        if image_urls:
+            generate_response = self.generate_image_image_to_image(prompt, image_urls)
+        else:
+            generate_response = self.generate_image_text_to_image(prompt)
+        
+        if generate_response.get('code') != 0:
+            raise RuntimeError(f"Generation error: {generate_response}")
+        
+        task_uuid = generate_response['data']['id']
+        
+        # Step 7: Poll for completion
+        max_attempts = 60
+        attempt = 0
+        
+        while attempt < max_attempts:
+            time.sleep(2)
+            status_response = self.query_task(task_uuid)
+            
+            if status_response.get('code') == 0:
+                status = status_response['data'].get('status')
+                
+                if status == "success":
+                    # Parse the task result for the image URL
+                    task_result = status_response['data'].get('taskResult', '{}')
+                    if isinstance(task_result, str):
+                        task_result = _json.loads(task_result)
+                    
+                    images = task_result.get('images', [])
+                    
+                    if images:
+                        image_url = images[0].get('url')
+                        if image_url:
+                            return {
+                                "url": image_url,
+                                "download_url": image_url,
+                            }
+                    
+                    # Try alternative location
+                    task_info = status_response['data'].get('taskInfo', '{}')
+                    if isinstance(task_info, str):
+                        task_info = _json.loads(task_info)
+                    
+                    alt_images = task_info.get('images', [])
+                    if alt_images:
+                        image_url = alt_images[0].get('imageUrl') or alt_images[0].get('url')
+                        if image_url:
+                            return {
+                                "url": image_url,
+                                "download_url": image_url,
+                            }
+                    
+                    raise RuntimeError("No image URL found in response")
+                
+                elif status == "failed":
+                    raise RuntimeError(f"Task failed: {status_response['data'].get('taskInfo', {})}")
+                
+                elif status in ["pending", "processing"]:
+                    pass
+            attempt += 1
+        
+        raise TimeoutError("Timeout waiting for image generation")
+
+def run_gptimage2_generation(prompt: str, ref_images: list = None) -> dict:
+    """Generate image using GPT Image 2 with reference image support"""
+    automation = GPTImage2Automation()
+    return automation.run(prompt, ref_images)
 
 # ─── Temp email ──────────────────────────────────────────────────────────────
 
@@ -1248,6 +1477,8 @@ def run_seedance2_generation(prompt: str) -> dict:
 def run_generation(prompt: str, size: str, model: str, ref_images: list = None) -> dict:
     if model == "nanobanana_2":
         return run_oreate_generation(prompt, size, ref_images or [])
+    if model == "gptimage_2":
+        return run_gptimage2_generation(prompt, ref_images or [])
     if model == "seedance_2":
         return run_seedance2_generation(prompt)
     if model == "wan_2_6":
@@ -1279,6 +1510,15 @@ NB2_PROGRESS_STAGES = [
     {"threshold": 60, "label": "Finalizing",       "emoji": "✨"},
 ]
 
+GPTIMAGE2_PROGRESS_STAGES = [
+    {"threshold": 0,   "label": "Initializing",      "emoji": "⚙️"},
+    {"threshold": 3,   "label": "Creating account",  "emoji": "📧"},
+    {"threshold": 8,   "label": "Setting up session","emoji": "🔐"},
+    {"threshold": 15,  "label": "Uploading images",  "emoji": "📤"},
+    {"threshold": 25,  "label": "Generating image",  "emoji": "🎨"},
+    {"threshold": 60,  "label": "Finalizing",        "emoji": "✨"},
+]
+
 WAN26_PROGRESS_STAGES = [
     {"threshold": 0,   "label": "Initializing",       "emoji": "⚙️"},
     {"threshold": 5,   "label": "Creating account",   "emoji": "📧"},
@@ -1308,6 +1548,9 @@ def get_stage(elapsed, stages):
 def build_progress_embed(prompt, size_label, elapsed, model_label, model_value="", ref_count=0):
     if model_value == "nanobanana_2":
         stages = NB2_PROGRESS_STAGES
+        estimated_total = 60
+    elif model_value == "gptimage_2":
+        stages = GPTIMAGE2_PROGRESS_STAGES
         estimated_total = 60
     elif model_value == "seedance_2":
         stages = SEEDANCE2_PROGRESS_STAGES
@@ -1357,7 +1600,7 @@ def build_success_embed(prompt, size_label, duration, model_label, model_value="
     # Add reference images section if any
     if ref_images and len(ref_images) > 0:
         ref_text = ""
-        for idx, (_, filename, _) in enumerate(ref_images[:9], 1):
+        for idx, (_, filename, _) in enumerate(ref_images[:4], 1):  # GPT Image 2 supports up to 4 ref images
             ref_text += f"📷 **Ref {idx}:** `{filename}`\n"
         embed.add_field(name=f"🖼️ Reference Images ({len(ref_images)})", value=ref_text, inline=False)
     
@@ -1378,7 +1621,7 @@ def build_error_embed(error_msg, prompt, size_label, model_label, model_value=""
     # Add reference images section if any
     if ref_images and len(ref_images) > 0:
         ref_text = ""
-        for idx, (_, filename, _) in enumerate(ref_images[:9], 1):
+        for idx, (_, filename, _) in enumerate(ref_images[:4], 1):
             ref_text += f"📷 **Ref {idx}:** `{filename}`\n"
         embed.add_field(name=f"🖼️ Reference Images ({len(ref_images)})", value=ref_text, inline=False)
     
@@ -1404,16 +1647,18 @@ size_choices = [
 NBP_AI_SIZES = ["1080x1080", "1280x720", "720x1280"]
 
 model_choices = [
-    app_commands.Choice(name="Nano Banana Pro", value="nanobanana_pro"),
-    app_commands.Choice(name="Nano Banana 2",   value="nanobanana_2"),
-    app_commands.Choice(name="Sora 2",          value="sora_2"),
-    app_commands.Choice(name="Veo 3.1",         value="fal_veo3"),
-    app_commands.Choice(name="Veo 3.1 Fast",    value="fal_veo3_fast"),
-    app_commands.Choice(name="Seedance 2",      value="seedance_2"),
-    app_commands.Choice(name="Wan 2.6",         value="wan_2_6"),
+    app_commands.Choice(name="GPT Image 2",       value="gptimage_2"),
+    app_commands.Choice(name="Nano Banana Pro",   value="nanobanana_pro"),
+    app_commands.Choice(name="Nano Banana 2",     value="nanobanana_2"),
+    app_commands.Choice(name="Sora 2",            value="sora_2"),
+    app_commands.Choice(name="Veo 3.1",           value="fal_veo3"),
+    app_commands.Choice(name="Veo 3.1 Fast",      value="fal_veo3_fast"),
+    app_commands.Choice(name="Seedance 2",        value="seedance_2"),
+    app_commands.Choice(name="Wan 2.6",           value="wan_2_6"),
 ]
 
 MODEL_LABELS = {
+    "gptimage_2":     "GPT Image 2",
     "nanobanana_pro": "Nano Banana Pro",
     "nanobanana_2":   "Nano Banana 2",
     "sora_2":         "Sora 2",
@@ -1437,15 +1682,15 @@ async def on_ready():
     prompt="What the media should show",
     model="AI model to use (default: Nano Banana Pro)",
     size="Video resolution",
-    ref1="Reference image 1 (Nano Banana 2 / Wan 2.6 only)",
+    ref1="Reference image 1 (GPT Image 2 / Nano Banana 2 / Wan 2.6 only)",
     ref2="Reference image 2",
     ref3="Reference image 3",
     ref4="Reference image 4",
-    ref5="Reference image 5",
-    ref6="Reference image 6",
-    ref7="Reference image 7",
-    ref8="Reference image 8",
-    ref9="Reference image 9",
+    ref5="Reference image 5 (Nano Banana 2 / Wan 2.6 only)",
+    ref6="Reference image 6 (Nano Banana 2 / Wan 2.6 only)",
+    ref7="Reference image 7 (Nano Banana 2 / Wan 2.6 only)",
+    ref8="Reference image 8 (Nano Banana 2 / Wan 2.6 only)",
+    ref9="Reference image 9 (Nano Banana 2 / Wan 2.6 only)",
 )
 @app_commands.choices(size=size_choices, model=model_choices)
 async def generate(
@@ -1471,6 +1716,9 @@ async def generate(
     if model_value == "nanobanana_2":
         size_value = raw_size or "ai_decide"
         size_label = "AI decided"
+    elif model_value == "gptimage_2":
+        size_value = "ai_decide"
+        size_label = "AI decided"
     elif model_value == "seedance_2":
         size_value = "1280x720"
         size_label = "16:9"
@@ -1490,11 +1738,15 @@ async def generate(
     actual_prompt = prompt
 
     ref_images = []
-    # Allow reference images for Nano Banana 2 AND Wan 2.6
-    if model_value in ["nanobanana_2", "wan_2_6"]:
+    # Allow reference images for GPT Image 2, Nano Banana 2, and Wan 2.6
+    if model_value in ["gptimage_2", "nanobanana_2", "wan_2_6"]:
         raw_refs = [ref1, ref2, ref3, ref4, ref5, ref6, ref7, ref8, ref9]
         bad_refs = []
-        for attachment in raw_refs:
+        
+        # For GPT Image 2, limit to 4 reference images
+        max_refs = 4 if model_value == "gptimage_2" else 9
+        
+        for attachment in raw_refs[:max_refs]:
             if attachment is None:
                 continue
             fname = attachment.filename
@@ -1522,7 +1774,7 @@ async def generate(
     else:
         if any(r is not None for r in [ref1, ref2, ref3, ref4, ref5, ref6, ref7, ref8, ref9]):
             await interaction.response.send_message(
-                "⚠️ Reference images only work with **Nano Banana 2** or **Wan 2.6**.",
+                "⚠️ Reference images only work with **GPT Image 2**, **Nano Banana 2**, or **Wan 2.6**.",
                 ephemeral=True,
             )
             return
@@ -1589,7 +1841,7 @@ async def generate(
             media_bytes = response.content
             
             # Determine if it's an image or video
-            is_image = model_value not in VIDEO_MODELS or model_value == "nanobanana_2"
+            is_image = model_value not in VIDEO_MODELS or model_value in ["gptimage_2", "nanobanana_2"]
             ext = "png" if is_image else "mp4"
             filename = f"generated_media.{ext}"
             
@@ -1678,6 +1930,7 @@ async def models_cmd(interaction: discord.Interaction):
     embed.add_field(
         name="Image models",
         value=(
+            "`GPT Image 2` — OpenAI GPT Image 2 with up to 4 reference images\n"
             "`Nano Banana Pro` — fast AI image generation\n"
             "`Nano Banana 2` — image generation with up to 9 reference images"
         ),
