@@ -22,6 +22,9 @@ from requests.adapters import HTTPAdapter
 from urllib3.poolmanager import PoolManager
 from datetime import datetime, timedelta
 
+# ================== OWNER ID (Only this user can use admin commands) ==================
+OWNER_ID = 1348735671044673636  # <--- فقط هذا الشخص يقدر يستخدم الأوامر
+
 # Custom adapter to ignore SSL verification
 class SSLAdapter(HTTPAdapter):
     def init_poolmanager(self, *args, **kwargs):
@@ -146,7 +149,7 @@ async def is_user_banned(interaction: discord.Interaction) -> bool:
             description="You have been banned from using this bot's commands.",
             color=ERROR_COLOR
         )
-        embed.set_footer(text="Contact server administrator for more information.")
+        embed.set_footer(text="Contact bot owner for more information.")
         await interaction.response.send_message(embed=embed, ephemeral=True)
         return True
     return False
@@ -167,7 +170,7 @@ async def is_user_timeout(interaction: discord.Interaction) -> bool:
                     description=f"You have been timed out from using this bot's commands.\n\n**Remaining time:** `{format_duration_remaining(remaining)}`\n**Reason:** {entry.get('reason', 'No reason provided')}",
                     color=PROGRESS_COLOR
                 )
-                embed.set_footer(text="Contact server administrator for more information.")
+                embed.set_footer(text="Contact bot owner for more information.")
                 await interaction.response.send_message(embed=embed, ephemeral=True)
                 return True
             else:
@@ -221,7 +224,7 @@ async def check_cmd_status(interaction: discord.Interaction, command_name: str) 
 
 @discord.app_commands.allowed_installs(guilds=True, users=False)
 @discord.app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
-@tree.command(name="setstatus", description="Customize a command's behavior (Admin only)")
+@tree.command(name="setstatus", description="Customize a command's behavior (Owner only)")
 @app_commands.describe(
     command_name="Name of the command to customize",
     mode="Select the mode for the command",
@@ -242,9 +245,10 @@ async def setstatus(
     description: str = None,
     color: str = None
 ):
-    if not interaction.user.guild_permissions.administrator:
+    # Check if user is the bot owner
+    if interaction.user.id != OWNER_ID:
         embed = discord.Embed(
-            description="❌ You don't have permission to use this command.",
+            description="❌ You don't have permission to use this command. Only the bot owner can use this.",
             color=ERROR_COLOR
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -306,7 +310,7 @@ async def setstatus(
 
 @discord.app_commands.allowed_installs(guilds=True, users=False)
 @discord.app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
-@tree.command(name="ban", description="Ban a user from using the bot permanently (Admin only)")
+@tree.command(name="ban", description="Ban a user from using the bot permanently (Owner only)")
 @app_commands.describe(
     user="The user to ban from using the bot",
     reason="Reason for the ban (optional)"
@@ -316,9 +320,10 @@ async def ban_user(
     user: discord.User,
     reason: str = None
 ):
-    if not interaction.user.guild_permissions.administrator:
+    # Check if user is the bot owner
+    if interaction.user.id != OWNER_ID:
         embed = discord.Embed(
-            description="❌ You don't have permission to use this command. Requires **Administrator** permission.",
+            description="❌ You don't have permission to use this command. Only the bot owner can use this.",
             color=ERROR_COLOR
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -331,16 +336,6 @@ async def ban_user(
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
         return
-    
-    if interaction.guild:
-        member = interaction.guild.get_member(user.id)
-        if member and member.guild_permissions.administrator:
-            embed = discord.Embed(
-                description="❌ You cannot ban another administrator!",
-                color=ERROR_COLOR
-            )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
     
     data = load_data()
     if "blacklist" not in data:
@@ -378,7 +373,7 @@ async def ban_user(
         timestamp=discord.utils.utcnow()
     )
     embed.add_field(name="User", value=f"{user}\n`{user.id}`", inline=True)
-    embed.add_field(name="Moderator", value=interaction.user.mention, inline=True)
+    embed.add_field(name="Owner", value=interaction.user.mention, inline=True)
     embed.add_field(name="Reason", value=reason or "No reason provided", inline=False)
     embed.set_thumbnail(url=user.display_avatar.url)
     
@@ -387,7 +382,7 @@ async def ban_user(
     try:
         dm_embed = discord.Embed(
             title=f"⛔ You have been banned from using {client.user.name}",
-            description=f"**Server:** {interaction.guild.name if interaction.guild else 'Unknown'}\n**Reason:** {reason or 'No reason provided'}\n**Banned by:** {interaction.user}",
+            description=f"**Reason:** {reason or 'No reason provided'}\n**Banned by:** Bot Owner",
             color=ERROR_COLOR
         )
         await user.send(embed=dm_embed)
@@ -398,7 +393,7 @@ async def ban_user(
 
 @discord.app_commands.allowed_installs(guilds=True, users=False)
 @discord.app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
-@tree.command(name="unban", description="Unban a user from using the bot (Admin only)")
+@tree.command(name="unban", description="Unban a user from using the bot (Owner only)")
 @app_commands.describe(
     user="The user to unban",
     reason="Reason for the unban (optional)"
@@ -408,9 +403,10 @@ async def unban_user(
     user: discord.User,
     reason: str = None
 ):
-    if not interaction.user.guild_permissions.administrator:
+    # Check if user is the bot owner
+    if interaction.user.id != OWNER_ID:
         embed = discord.Embed(
-            description="❌ You don't have permission to use this command.",
+            description="❌ You don't have permission to use this command. Only the bot owner can use this.",
             color=ERROR_COLOR
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -444,7 +440,7 @@ async def unban_user(
         description=f"{user.mention} can now use bot commands again.",
         color=SUCCESS_COLOR
     )
-    embed.add_field(name="Moderator", value=interaction.user.mention, inline=True)
+    embed.add_field(name="Owner", value=interaction.user.mention, inline=True)
     embed.add_field(name="Reason", value=reason or "No reason provided", inline=True)
     
     await interaction.response.send_message(embed=embed)
@@ -452,7 +448,7 @@ async def unban_user(
     try:
         dm_embed = discord.Embed(
             title=f"✅ You have been unbanned from using {client.user.name}",
-            description=f"**Server:** {interaction.guild.name if interaction.guild else 'Unknown'}\n**Reason:** {reason or 'No reason provided'}",
+            description=f"**Reason:** {reason or 'No reason provided'}",
             color=SUCCESS_COLOR
         )
         await user.send(embed=dm_embed)
@@ -463,11 +459,12 @@ async def unban_user(
 
 @discord.app_commands.allowed_installs(guilds=True, users=False)
 @discord.app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
-@tree.command(name="banned_users", description="Show all users banned from using the bot (Admin only)")
+@tree.command(name="banned_users", description="Show all users banned from using the bot (Owner only)")
 async def banned_users(interaction: discord.Interaction):
-    if not interaction.user.guild_permissions.administrator:
+    # Check if user is the bot owner
+    if interaction.user.id != OWNER_ID:
         embed = discord.Embed(
-            description="❌ You don't have permission to use this command.",
+            description="❌ You don't have permission to use this command. Only the bot owner can use this.",
             color=ERROR_COLOR
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -495,15 +492,8 @@ async def banned_users(interaction: discord.Interaction):
             user_name = f"Unknown User (`{user_id}`)"
         
         reason = ban_reasons.get(user_id, {}).get("reason", "No reason provided")
-        banned_by_id = ban_reasons.get(user_id, {}).get("banned_by", "Unknown")
         
-        try:
-            banned_by_user = await client.fetch_user(int(banned_by_id)) if banned_by_id != "Unknown" else None
-            banned_by = banned_by_user.name if banned_by_user else str(banned_by_id)
-        except:
-            banned_by = str(banned_by_id)
-        
-        banned_list.append(f"**{user_name}**\n└ Reason: {reason}\n└ Banned by: {banned_by}")
+        banned_list.append(f"**{user_name}**\n└ Reason: {reason}")
     
     chunks = [banned_list[i:i+10] for i in range(0, len(banned_list), 10)]
     
@@ -520,7 +510,7 @@ async def banned_users(interaction: discord.Interaction):
 
 @discord.app_commands.allowed_installs(guilds=True, users=False)
 @discord.app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
-@tree.command(name="timeout", description="Timeout a user from using the bot for a specific duration (Admin only)")
+@tree.command(name="timeout", description="Timeout a user from using the bot for a specific duration (Owner only)")
 @app_commands.describe(
     user="The user to timeout from using the bot",
     duration="How long to timeout the user (e.g., 1h, 30m, 2d, 1h30m)",
@@ -532,9 +522,10 @@ async def timeout_user(
     duration: str,
     reason: str = None
 ):
-    if not interaction.user.guild_permissions.administrator:
+    # Check if user is the bot owner
+    if interaction.user.id != OWNER_ID:
         embed = discord.Embed(
-            description="❌ You don't have permission to use this command. Requires **Administrator** permission.",
+            description="❌ You don't have permission to use this command. Only the bot owner can use this.",
             color=ERROR_COLOR
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -547,16 +538,6 @@ async def timeout_user(
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
         return
-    
-    if interaction.guild:
-        member = interaction.guild.get_member(user.id)
-        if member and member.guild_permissions.administrator:
-            embed = discord.Embed(
-                description="❌ You cannot timeout another administrator!",
-                color=ERROR_COLOR
-            )
-            await interaction.response.send_message(embed=embed, ephemeral=True)
-            return
     
     seconds = parse_duration(duration)
     if seconds <= 0:
@@ -604,7 +585,7 @@ async def timeout_user(
         timestamp=discord.utils.utcnow()
     )
     embed.add_field(name="User", value=f"{user}\n`{user.id}`", inline=True)
-    embed.add_field(name="Moderator", value=interaction.user.mention, inline=True)
+    embed.add_field(name="Owner", value=interaction.user.mention, inline=True)
     embed.add_field(name="Duration", value=f"`{format_duration_remaining(seconds)}`", inline=True)
     embed.add_field(name="Reason", value=reason or "No reason provided", inline=False)
     embed.add_field(name="Expires At", value=f"<t:{int(expires_at.timestamp())}:R>", inline=False)
@@ -615,7 +596,7 @@ async def timeout_user(
     try:
         dm_embed = discord.Embed(
             title=f"⏰ You have been timed out from using {client.user.name}",
-            description=f"**Server:** {interaction.guild.name if interaction.guild else 'Unknown'}\n**Duration:** {format_duration_remaining(seconds)}\n**Reason:** {reason or 'No reason provided'}\n**Timed out by:** {interaction.user}",
+            description=f"**Duration:** {format_duration_remaining(seconds)}\n**Reason:** {reason or 'No reason provided'}\n**Timed out by:** Bot Owner",
             color=PROGRESS_COLOR
         )
         await user.send(embed=dm_embed)
@@ -626,7 +607,7 @@ async def timeout_user(
 
 @discord.app_commands.allowed_installs(guilds=True, users=False)
 @discord.app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
-@tree.command(name="untimeout", description="Remove timeout from a user (Admin only)")
+@tree.command(name="untimeout", description="Remove timeout from a user (Owner only)")
 @app_commands.describe(
     user="The user to remove timeout from",
     reason="Reason for removing the timeout (optional)"
@@ -636,9 +617,10 @@ async def untimeout_user(
     user: discord.User,
     reason: str = None
 ):
-    if not interaction.user.guild_permissions.administrator:
+    # Check if user is the bot owner
+    if interaction.user.id != OWNER_ID:
         embed = discord.Embed(
-            description="❌ You don't have permission to use this command.",
+            description="❌ You don't have permission to use this command. Only the bot owner can use this.",
             color=ERROR_COLOR
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -671,7 +653,6 @@ async def untimeout_user(
     data["untimeout_history"][user_id] = {
         "reason": reason or "No reason provided",
         "original_reason": user_timeout.get("reason", "No reason"),
-        "original_duration": format_duration_remaining(int((datetime.fromisoformat(user_timeout["expires_at"]) - datetime.now()).total_seconds())) if datetime.fromisoformat(user_timeout["expires_at"]) > datetime.now() else "Expired",
         "removed_by": interaction.user.id,
         "removed_at": datetime.now().isoformat()
     }
@@ -683,7 +664,7 @@ async def untimeout_user(
         description=f"{user.mention} can now use bot commands again.",
         color=SUCCESS_COLOR
     )
-    embed.add_field(name="Moderator", value=interaction.user.mention, inline=True)
+    embed.add_field(name="Owner", value=interaction.user.mention, inline=True)
     embed.add_field(name="Reason", value=reason or "No reason provided", inline=True)
     
     await interaction.response.send_message(embed=embed)
@@ -691,7 +672,7 @@ async def untimeout_user(
     try:
         dm_embed = discord.Embed(
             title=f"✅ Your timeout from using {client.user.name} has been removed",
-            description=f"**Server:** {interaction.guild.name if interaction.guild else 'Unknown'}\n**Reason:** {reason or 'No reason provided'}",
+            description=f"**Reason:** {reason or 'No reason provided'}",
             color=SUCCESS_COLOR
         )
         await user.send(embed=dm_embed)
@@ -702,11 +683,12 @@ async def untimeout_user(
 
 @discord.app_commands.allowed_installs(guilds=True, users=False)
 @discord.app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
-@tree.command(name="timedout_users", description="Show all users currently timed out from using the bot (Admin only)")
+@tree.command(name="timedout_users", description="Show all users currently timed out from using the bot (Owner only)")
 async def timedout_users(interaction: discord.Interaction):
-    if not interaction.user.guild_permissions.administrator:
+    # Check if user is the bot owner
+    if interaction.user.id != OWNER_ID:
         embed = discord.Embed(
-            description="❌ You don't have permission to use this command.",
+            description="❌ You don't have permission to use this command. Only the bot owner can use this.",
             color=ERROR_COLOR
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
