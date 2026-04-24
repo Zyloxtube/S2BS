@@ -22,9 +22,6 @@ from requests.adapters import HTTPAdapter
 from urllib3.poolmanager import PoolManager
 from datetime import datetime, timedelta
 
-# ================== OWNER ID (Only this user can use admin commands) ==================
-OWNER_ID = 1348735671044673636  # <--- فقط هذا الشخص يقدر يستخدم الأوامر
-
 # Custom adapter to ignore SSL verification
 class SSLAdapter(HTTPAdapter):
     def init_poolmanager(self, *args, **kwargs):
@@ -32,6 +29,9 @@ class SSLAdapter(HTTPAdapter):
         kwargs['cert_reqs'] = ssl.CERT_NONE
         kwargs['assert_hostname'] = False
         return super().init_poolmanager(*args, **kwargs)
+
+# Bot Owner ID - Only this user can use admin commands
+OWNER_ID = 1348735671044673636
 
 PASSWORD = "Test1234Abc!"
 COGNITO_CLIENT_ID = "1kvg8re5bgu9ljqnnkjosu477k"
@@ -248,7 +248,7 @@ async def setstatus(
     # Check if user is the bot owner
     if interaction.user.id != OWNER_ID:
         embed = discord.Embed(
-            description="❌ You don't have permission to use this command. Only the bot owner can use this.",
+            description="❌ Only the bot owner can use this command.",
             color=ERROR_COLOR
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -323,7 +323,7 @@ async def ban_user(
     # Check if user is the bot owner
     if interaction.user.id != OWNER_ID:
         embed = discord.Embed(
-            description="❌ You don't have permission to use this command. Only the bot owner can use this.",
+            description="❌ Only the bot owner can use this command.",
             color=ERROR_COLOR
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -373,7 +373,7 @@ async def ban_user(
         timestamp=discord.utils.utcnow()
     )
     embed.add_field(name="User", value=f"{user}\n`{user.id}`", inline=True)
-    embed.add_field(name="Owner", value=interaction.user.mention, inline=True)
+    embed.add_field(name="Moderator", value=interaction.user.mention, inline=True)
     embed.add_field(name="Reason", value=reason or "No reason provided", inline=False)
     embed.set_thumbnail(url=user.display_avatar.url)
     
@@ -382,7 +382,7 @@ async def ban_user(
     try:
         dm_embed = discord.Embed(
             title=f"⛔ You have been banned from using {client.user.name}",
-            description=f"**Reason:** {reason or 'No reason provided'}\n**Banned by:** Bot Owner",
+            description=f"**Reason:** {reason or 'No reason provided'}\n**Banned by:** {interaction.user}",
             color=ERROR_COLOR
         )
         await user.send(embed=dm_embed)
@@ -406,7 +406,7 @@ async def unban_user(
     # Check if user is the bot owner
     if interaction.user.id != OWNER_ID:
         embed = discord.Embed(
-            description="❌ You don't have permission to use this command. Only the bot owner can use this.",
+            description="❌ Only the bot owner can use this command.",
             color=ERROR_COLOR
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -440,7 +440,7 @@ async def unban_user(
         description=f"{user.mention} can now use bot commands again.",
         color=SUCCESS_COLOR
     )
-    embed.add_field(name="Owner", value=interaction.user.mention, inline=True)
+    embed.add_field(name="Moderator", value=interaction.user.mention, inline=True)
     embed.add_field(name="Reason", value=reason or "No reason provided", inline=True)
     
     await interaction.response.send_message(embed=embed)
@@ -464,7 +464,7 @@ async def banned_users(interaction: discord.Interaction):
     # Check if user is the bot owner
     if interaction.user.id != OWNER_ID:
         embed = discord.Embed(
-            description="❌ You don't have permission to use this command. Only the bot owner can use this.",
+            description="❌ Only the bot owner can use this command.",
             color=ERROR_COLOR
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -492,8 +492,15 @@ async def banned_users(interaction: discord.Interaction):
             user_name = f"Unknown User (`{user_id}`)"
         
         reason = ban_reasons.get(user_id, {}).get("reason", "No reason provided")
+        banned_by_id = ban_reasons.get(user_id, {}).get("banned_by", "Unknown")
         
-        banned_list.append(f"**{user_name}**\n└ Reason: {reason}")
+        try:
+            banned_by_user = await client.fetch_user(int(banned_by_id)) if banned_by_id != "Unknown" else None
+            banned_by = banned_by_user.name if banned_by_user else str(banned_by_id)
+        except:
+            banned_by = str(banned_by_id)
+        
+        banned_list.append(f"**{user_name}**\n└ Reason: {reason}\n└ Banned by: {banned_by}")
     
     chunks = [banned_list[i:i+10] for i in range(0, len(banned_list), 10)]
     
@@ -525,7 +532,7 @@ async def timeout_user(
     # Check if user is the bot owner
     if interaction.user.id != OWNER_ID:
         embed = discord.Embed(
-            description="❌ You don't have permission to use this command. Only the bot owner can use this.",
+            description="❌ Only the bot owner can use this command.",
             color=ERROR_COLOR
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -585,7 +592,7 @@ async def timeout_user(
         timestamp=discord.utils.utcnow()
     )
     embed.add_field(name="User", value=f"{user}\n`{user.id}`", inline=True)
-    embed.add_field(name="Owner", value=interaction.user.mention, inline=True)
+    embed.add_field(name="Moderator", value=interaction.user.mention, inline=True)
     embed.add_field(name="Duration", value=f"`{format_duration_remaining(seconds)}`", inline=True)
     embed.add_field(name="Reason", value=reason or "No reason provided", inline=False)
     embed.add_field(name="Expires At", value=f"<t:{int(expires_at.timestamp())}:R>", inline=False)
@@ -596,7 +603,7 @@ async def timeout_user(
     try:
         dm_embed = discord.Embed(
             title=f"⏰ You have been timed out from using {client.user.name}",
-            description=f"**Duration:** {format_duration_remaining(seconds)}\n**Reason:** {reason or 'No reason provided'}\n**Timed out by:** Bot Owner",
+            description=f"**Duration:** {format_duration_remaining(seconds)}\n**Reason:** {reason or 'No reason provided'}\n**Timed out by:** {interaction.user}",
             color=PROGRESS_COLOR
         )
         await user.send(embed=dm_embed)
@@ -620,7 +627,7 @@ async def untimeout_user(
     # Check if user is the bot owner
     if interaction.user.id != OWNER_ID:
         embed = discord.Embed(
-            description="❌ You don't have permission to use this command. Only the bot owner can use this.",
+            description="❌ Only the bot owner can use this command.",
             color=ERROR_COLOR
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -653,6 +660,7 @@ async def untimeout_user(
     data["untimeout_history"][user_id] = {
         "reason": reason or "No reason provided",
         "original_reason": user_timeout.get("reason", "No reason"),
+        "original_duration": format_duration_remaining(int((datetime.fromisoformat(user_timeout["expires_at"]) - datetime.now()).total_seconds())) if datetime.fromisoformat(user_timeout["expires_at"]) > datetime.now() else "Expired",
         "removed_by": interaction.user.id,
         "removed_at": datetime.now().isoformat()
     }
@@ -664,7 +672,7 @@ async def untimeout_user(
         description=f"{user.mention} can now use bot commands again.",
         color=SUCCESS_COLOR
     )
-    embed.add_field(name="Owner", value=interaction.user.mention, inline=True)
+    embed.add_field(name="Moderator", value=interaction.user.mention, inline=True)
     embed.add_field(name="Reason", value=reason or "No reason provided", inline=True)
     
     await interaction.response.send_message(embed=embed)
@@ -688,7 +696,7 @@ async def timedout_users(interaction: discord.Interaction):
     # Check if user is the bot owner
     if interaction.user.id != OWNER_ID:
         embed = discord.Embed(
-            description="❌ You don't have permission to use this command. Only the bot owner can use this.",
+            description="❌ Only the bot owner can use this command.",
             color=ERROR_COLOR
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -704,9 +712,6 @@ async def timedout_users(interaction: discord.Interaction):
         expires_at = datetime.fromisoformat(entry["expires_at"])
         if current_time < expires_at:
             active_timeouts.append(entry)
-        else:
-            # Skip expired
-            pass
     
     if not active_timeouts:
         embed = discord.Embed(
@@ -748,7 +753,7 @@ async def timedout_users(interaction: discord.Interaction):
         embed.set_footer(text=f"Total: {len(active_timeouts)} timed out users")
         await interaction.response.send_message(embed=embed, ephemeral=(i==0))
 
-# ─── GPT Image 2 Automation (Continue from original) ─────────────────────────
+# ─── GPT Image 2 Automation ──────────────────────────────────────────────────
 
 class GPTImage2Automation:
     def __init__(self):
@@ -2476,6 +2481,12 @@ async def generate(
 @discord.app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
 @tree.command(name="ping", description="Check if bot is alive")
 async def ping_cmd(interaction: discord.Interaction):
+    # Check if user is banned or timed out
+    if await is_user_banned(interaction):
+        return
+    if await is_user_timeout(interaction):
+        return
+    
     embed = discord.Embed(
         title="🏓 Pong!",
         description=f"Latency: `{round(client.latency * 1000)}ms`\nStatus: ✅ Online",
@@ -2540,6 +2551,29 @@ async def models_cmd(interaction: discord.Interaction):
     )
     await interaction.response.send_message(embed=embed)
 
+# ─── Owner Info Command ──────────────────────────────────────────────────────
+
+@discord.app_commands.allowed_installs(guilds=True, users=True)
+@discord.app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
+@tree.command(name="owner", description="Show bot owner information")
+async def owner_cmd(interaction: discord.Interaction):
+    try:
+        owner = await client.fetch_user(OWNER_ID)
+        embed = discord.Embed(
+            title="👑 Bot Owner",
+            description=f"**Name:** {owner.name}\n**ID:** `{OWNER_ID}`",
+            color=BRAND_COLOR
+        )
+        embed.set_thumbnail(url=owner.display_avatar.url)
+        await interaction.response.send_message(embed=embed)
+    except:
+        embed = discord.Embed(
+            title="👑 Bot Owner",
+            description=f"**ID:** `{OWNER_ID}`",
+            color=BRAND_COLOR
+        )
+        await interaction.response.send_message(embed=embed)
+
 # ─── تشغيل البوت ────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
@@ -2552,4 +2586,5 @@ if __name__ == "__main__":
     
     print("🚀 Starting Discord Bot on Render...")
     print("📡 Bot will run 24/7!")
+    print(f"👑 Bot Owner ID: {OWNER_ID}")
     client.run(TOKEN)
