@@ -30,9 +30,6 @@ class SSLAdapter(HTTPAdapter):
         kwargs['assert_hostname'] = False
         return super().init_poolmanager(*args, **kwargs)
 
-# Bot Owner ID - Only this user can use admin commands
-OWNER_ID = 1348735671044673636
-
 PASSWORD = "Test1234Abc!"
 COGNITO_CLIENT_ID = "1kvg8re5bgu9ljqnnkjosu477k"
 USER_POOL_ID = "eu-west-1_7hEawdalF"
@@ -99,7 +96,6 @@ def save_data(data):
         json.dump(data, f, indent=4)
 
 def parse_duration(duration_str: str) -> int:
-    """Parse duration string like '1h', '30m', '2d' into seconds"""
     total_seconds = 0
     pattern = r'(\d+)([smhd])'
     matches = re.findall(pattern, duration_str.lower())
@@ -118,7 +114,6 @@ def parse_duration(duration_str: str) -> int:
     return total_seconds
 
 def format_duration_remaining(seconds: int) -> str:
-    """Format seconds into readable duration"""
     days = seconds // 86400
     hours = (seconds % 86400) // 3600
     minutes = (seconds % 3600) // 60
@@ -139,7 +134,6 @@ def format_duration_remaining(seconds: int) -> str:
 # ─── Check Functions ─────────────────────────────────────────────────────────
 
 async def is_user_banned(interaction: discord.Interaction) -> bool:
-    """Check if user is banned from using the bot"""
     data = load_data()
     user_id = str(interaction.user.id)
     
@@ -149,13 +143,12 @@ async def is_user_banned(interaction: discord.Interaction) -> bool:
             description="You have been banned from using this bot's commands.",
             color=ERROR_COLOR
         )
-        embed.set_footer(text="Contact bot owner for more information.")
+        embed.set_footer(text="Contact server administrator for more information.")
         await interaction.response.send_message(embed=embed, ephemeral=True)
         return True
     return False
 
 async def is_user_timeout(interaction: discord.Interaction) -> bool:
-    """Check if user is timed out from using the bot"""
     data = load_data()
     user_id = str(interaction.user.id)
     timeout_list = data.get("timeout_list", [])
@@ -170,30 +163,25 @@ async def is_user_timeout(interaction: discord.Interaction) -> bool:
                     description=f"You have been timed out from using this bot's commands.\n\n**Remaining time:** `{format_duration_remaining(remaining)}`\n**Reason:** {entry.get('reason', 'No reason provided')}",
                     color=PROGRESS_COLOR
                 )
-                embed.set_footer(text="Contact bot owner for more information.")
+                embed.set_footer(text="Contact server administrator for more information.")
                 await interaction.response.send_message(embed=embed, ephemeral=True)
                 return True
             else:
-                # Remove expired timeout
                 timeout_list.remove(entry)
                 save_data(data)
                 return False
     return False
 
 async def check_cmd_status(interaction: discord.Interaction, command_name: str) -> bool:
-    """Check if command is down/buggy or if user is banned/timeout"""
-    # Check if user is banned
     if await is_user_banned(interaction):
         return False
     
-    # Check if user is timed out
     if await is_user_timeout(interaction):
         return False
     
     data = load_data()
     guild_id = str(interaction.guild.id) if interaction.guild else None
     
-    # If no guild (DM) or no config for this guild, allow
     if not guild_id or guild_id not in data or command_name not in data[guild_id]:
         return True
     
@@ -215,7 +203,10 @@ async def check_cmd_status(interaction: discord.Interaction, command_name: str) 
             description="⚠️ **This Command is Buggy!** Some features may not work correctly.",
             color=PROGRESS_COLOR
         )
-        await interaction.followup.send(embed=embed, ephemeral=True)
+        try:
+            await interaction.followup.send(embed=embed, ephemeral=True)
+        except:
+            await interaction.response.send_message(embed=embed, ephemeral=True)
         return True
     
     return True
@@ -224,7 +215,7 @@ async def check_cmd_status(interaction: discord.Interaction, command_name: str) 
 
 @discord.app_commands.allowed_installs(guilds=True, users=False)
 @discord.app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
-@tree.command(name="setstatus", description="Customize a command's behavior (Owner only)")
+@tree.command(name="setstatus", description="Customize a command's behavior (Admin only)")
 @app_commands.describe(
     command_name="Name of the command to customize",
     mode="Select the mode for the command",
@@ -245,13 +236,14 @@ async def setstatus(
     description: str = None,
     color: str = None
 ):
-    # Check if user is the bot owner
-    if interaction.user.id != OWNER_ID:
+    await interaction.response.defer(ephemeral=True)
+    
+    if not interaction.user.guild_permissions.administrator:
         embed = discord.Embed(
-            description="❌ Only the bot owner can use this command.",
+            description="❌ You need **Administrator** permission to use this command.",
             color=ERROR_COLOR
         )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
         return
 
     data = load_data()
@@ -268,7 +260,7 @@ async def setstatus(
             description=f"✅ `/{command_name}` has been set back to **Normal** mode.",
             color=SUCCESS_COLOR
         )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
         return
 
     hex_color = BRAND_COLOR
@@ -304,13 +296,13 @@ async def setstatus(
     )
     preview_embed.set_footer(text=f"Configured by {interaction.user}", icon_url=interaction.user.display_avatar.url)
 
-    await interaction.response.send_message(embed=preview_embed, ephemeral=True)
+    await interaction.followup.send(embed=preview_embed, ephemeral=True)
 
-# ─── Ban Command (Permanent ban from using bot) ──────────────────────────────
+# ─── Ban Command ──────────────────────────────────────────────────────────────
 
 @discord.app_commands.allowed_installs(guilds=True, users=False)
 @discord.app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
-@tree.command(name="ban", description="Ban a user from using the bot permanently (Owner only)")
+@tree.command(name="ban", description="Ban a user from using the bot permanently (Admin only)")
 @app_commands.describe(
     user="The user to ban from using the bot",
     reason="Reason for the ban (optional)"
@@ -320,13 +312,14 @@ async def ban_user(
     user: discord.User,
     reason: str = None
 ):
-    # Check if user is the bot owner
-    if interaction.user.id != OWNER_ID:
+    await interaction.response.defer(ephemeral=True)
+    
+    if not interaction.user.guild_permissions.administrator:
         embed = discord.Embed(
-            description="❌ Only the bot owner can use this command.",
+            description="❌ You need **Administrator** permission to use this command.",
             color=ERROR_COLOR
         )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
         return
     
     if user == client.user:
@@ -334,7 +327,7 @@ async def ban_user(
             description="❌ You cannot ban the bot!",
             color=ERROR_COLOR
         )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
         return
     
     data = load_data()
@@ -347,10 +340,9 @@ async def ban_user(
             description=f"❌ {user.mention} is already banned from using the bot.",
             color=ERROR_COLOR
         )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
         return
     
-    # Remove from timeout list if present
     if "timeout_list" in data:
         data["timeout_list"] = [entry for entry in data["timeout_list"] if entry["user_id"] != user_id]
     
@@ -369,15 +361,14 @@ async def ban_user(
     embed = discord.Embed(
         title="✅ User Banned From Bot",
         description=f"{user.mention} has been banned from using **all bot commands**.",
-        color=SUCCESS_COLOR,
-        timestamp=discord.utils.utcnow()
+        color=SUCCESS_COLOR
     )
     embed.add_field(name="User", value=f"{user}\n`{user.id}`", inline=True)
     embed.add_field(name="Moderator", value=interaction.user.mention, inline=True)
     embed.add_field(name="Reason", value=reason or "No reason provided", inline=False)
     embed.set_thumbnail(url=user.display_avatar.url)
     
-    await interaction.response.send_message(embed=embed)
+    await interaction.followup.send(embed=embed)
     
     try:
         dm_embed = discord.Embed(
@@ -393,7 +384,7 @@ async def ban_user(
 
 @discord.app_commands.allowed_installs(guilds=True, users=False)
 @discord.app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
-@tree.command(name="unban", description="Unban a user from using the bot (Owner only)")
+@tree.command(name="unban", description="Unban a user from using the bot (Admin only)")
 @app_commands.describe(
     user="The user to unban",
     reason="Reason for the unban (optional)"
@@ -403,13 +394,14 @@ async def unban_user(
     user: discord.User,
     reason: str = None
 ):
-    # Check if user is the bot owner
-    if interaction.user.id != OWNER_ID:
+    await interaction.response.defer(ephemeral=True)
+    
+    if not interaction.user.guild_permissions.administrator:
         embed = discord.Embed(
-            description="❌ Only the bot owner can use this command.",
+            description="❌ You need **Administrator** permission to use this command.",
             color=ERROR_COLOR
         )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
         return
     
     data = load_data()
@@ -420,18 +412,10 @@ async def unban_user(
             description=f"❌ {user.mention} is not banned from using the bot.",
             color=ERROR_COLOR
         )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
         return
     
     data["blacklist"].remove(user_id)
-    
-    if "unban_history" not in data:
-        data["unban_history"] = {}
-    data["unban_history"][user_id] = {
-        "reason": reason or "No reason provided",
-        "unbanned_by": interaction.user.id,
-        "unbanned_at": datetime.now().isoformat()
-    }
     
     save_data(data)
     
@@ -443,7 +427,7 @@ async def unban_user(
     embed.add_field(name="Moderator", value=interaction.user.mention, inline=True)
     embed.add_field(name="Reason", value=reason or "No reason provided", inline=True)
     
-    await interaction.response.send_message(embed=embed)
+    await interaction.followup.send(embed=embed)
     
     try:
         dm_embed = discord.Embed(
@@ -459,15 +443,16 @@ async def unban_user(
 
 @discord.app_commands.allowed_installs(guilds=True, users=False)
 @discord.app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
-@tree.command(name="banned_users", description="Show all users banned from using the bot (Owner only)")
+@tree.command(name="banned_users", description="Show all users banned from using the bot (Admin only)")
 async def banned_users(interaction: discord.Interaction):
-    # Check if user is the bot owner
-    if interaction.user.id != OWNER_ID:
+    await interaction.response.defer(ephemeral=True)
+    
+    if not interaction.user.guild_permissions.administrator:
         embed = discord.Embed(
-            description="❌ Only the bot owner can use this command.",
+            description="❌ You need **Administrator** permission to use this command.",
             color=ERROR_COLOR
         )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
         return
     
     data = load_data()
@@ -480,7 +465,7 @@ async def banned_users(interaction: discord.Interaction):
             description="No users are currently banned from using the bot.",
             color=INFO_COLOR
         )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
         return
     
     banned_list = []
@@ -511,13 +496,13 @@ async def banned_users(interaction: discord.Interaction):
             color=ERROR_COLOR
         )
         embed.set_footer(text=f"Total: {len(blacklist)} banned users")
-        await interaction.response.send_message(embed=embed, ephemeral=(i==0))
+        await interaction.followup.send(embed=embed, ephemeral=(i==0))
 
 # ─── Timeout Command ────────────────────────────────────────────────────────
 
 @discord.app_commands.allowed_installs(guilds=True, users=False)
 @discord.app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
-@tree.command(name="timeout", description="Timeout a user from using the bot for a specific duration (Owner only)")
+@tree.command(name="timeout", description="Timeout a user from using the bot for a specific duration (Admin only)")
 @app_commands.describe(
     user="The user to timeout from using the bot",
     duration="How long to timeout the user (e.g., 1h, 30m, 2d, 1h30m)",
@@ -529,13 +514,14 @@ async def timeout_user(
     duration: str,
     reason: str = None
 ):
-    # Check if user is the bot owner
-    if interaction.user.id != OWNER_ID:
+    await interaction.response.defer(ephemeral=True)
+    
+    if not interaction.user.guild_permissions.administrator:
         embed = discord.Embed(
-            description="❌ Only the bot owner can use this command.",
+            description="❌ You need **Administrator** permission to use this command.",
             color=ERROR_COLOR
         )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
         return
     
     if user == client.user:
@@ -543,7 +529,7 @@ async def timeout_user(
             description="❌ You cannot timeout the bot!",
             color=ERROR_COLOR
         )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
         return
     
     seconds = parse_duration(duration)
@@ -552,7 +538,7 @@ async def timeout_user(
             description="❌ Invalid duration format. Use formats like: `30m`, `2h`, `1d`, `1h30m`",
             color=ERROR_COLOR
         )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
         return
     
     data = load_data()
@@ -561,16 +547,14 @@ async def timeout_user(
     
     user_id = str(user.id)
     
-    # Remove existing timeout if any
     data["timeout_list"] = [entry for entry in data["timeout_list"] if entry["user_id"] != user_id]
     
-    # Remove from blacklist if present (can't be both)
     if user_id in data.get("blacklist", []):
         embed = discord.Embed(
             description=f"❌ {user.mention} is permanently banned. Use `unban` first.",
             color=ERROR_COLOR
         )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
         return
     
     expires_at = datetime.now() + timedelta(seconds=seconds)
@@ -588,8 +572,7 @@ async def timeout_user(
     embed = discord.Embed(
         title="⏰ User Timed Out From Bot",
         description=f"{user.mention} has been timed out from using **all bot commands**.",
-        color=PROGRESS_COLOR,
-        timestamp=discord.utils.utcnow()
+        color=PROGRESS_COLOR
     )
     embed.add_field(name="User", value=f"{user}\n`{user.id}`", inline=True)
     embed.add_field(name="Moderator", value=interaction.user.mention, inline=True)
@@ -598,7 +581,7 @@ async def timeout_user(
     embed.add_field(name="Expires At", value=f"<t:{int(expires_at.timestamp())}:R>", inline=False)
     embed.set_thumbnail(url=user.display_avatar.url)
     
-    await interaction.response.send_message(embed=embed)
+    await interaction.followup.send(embed=embed)
     
     try:
         dm_embed = discord.Embed(
@@ -614,7 +597,7 @@ async def timeout_user(
 
 @discord.app_commands.allowed_installs(guilds=True, users=False)
 @discord.app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
-@tree.command(name="untimeout", description="Remove timeout from a user (Owner only)")
+@tree.command(name="untimeout", description="Remove timeout from a user (Admin only)")
 @app_commands.describe(
     user="The user to remove timeout from",
     reason="Reason for removing the timeout (optional)"
@@ -624,20 +607,20 @@ async def untimeout_user(
     user: discord.User,
     reason: str = None
 ):
-    # Check if user is the bot owner
-    if interaction.user.id != OWNER_ID:
+    await interaction.response.defer(ephemeral=True)
+    
+    if not interaction.user.guild_permissions.administrator:
         embed = discord.Embed(
-            description="❌ Only the bot owner can use this command.",
+            description="❌ You need **Administrator** permission to use this command.",
             color=ERROR_COLOR
         )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
         return
     
     data = load_data()
     user_id = str(user.id)
     timeout_list = data.get("timeout_list", [])
     
-    # Check if user is timed out
     user_timeout = None
     for entry in timeout_list:
         if entry["user_id"] == user_id:
@@ -649,22 +632,10 @@ async def untimeout_user(
             description=f"❌ {user.mention} is not currently timed out.",
             color=ERROR_COLOR
         )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
         return
     
-    # Remove timeout
     data["timeout_list"] = [entry for entry in timeout_list if entry["user_id"] != user_id]
-    
-    if "untimeout_history" not in data:
-        data["untimeout_history"] = {}
-    data["untimeout_history"][user_id] = {
-        "reason": reason or "No reason provided",
-        "original_reason": user_timeout.get("reason", "No reason"),
-        "original_duration": format_duration_remaining(int((datetime.fromisoformat(user_timeout["expires_at"]) - datetime.now()).total_seconds())) if datetime.fromisoformat(user_timeout["expires_at"]) > datetime.now() else "Expired",
-        "removed_by": interaction.user.id,
-        "removed_at": datetime.now().isoformat()
-    }
-    
     save_data(data)
     
     embed = discord.Embed(
@@ -675,7 +646,7 @@ async def untimeout_user(
     embed.add_field(name="Moderator", value=interaction.user.mention, inline=True)
     embed.add_field(name="Reason", value=reason or "No reason provided", inline=True)
     
-    await interaction.response.send_message(embed=embed)
+    await interaction.followup.send(embed=embed)
     
     try:
         dm_embed = discord.Embed(
@@ -691,21 +662,21 @@ async def untimeout_user(
 
 @discord.app_commands.allowed_installs(guilds=True, users=False)
 @discord.app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
-@tree.command(name="timedout_users", description="Show all users currently timed out from using the bot (Owner only)")
+@tree.command(name="timedout_users", description="Show all users currently timed out from using the bot (Admin only)")
 async def timedout_users(interaction: discord.Interaction):
-    # Check if user is the bot owner
-    if interaction.user.id != OWNER_ID:
+    await interaction.response.defer(ephemeral=True)
+    
+    if not interaction.user.guild_permissions.administrator:
         embed = discord.Embed(
-            description="❌ Only the bot owner can use this command.",
+            description="❌ You need **Administrator** permission to use this command.",
             color=ERROR_COLOR
         )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
         return
     
     data = load_data()
     timeout_list = data.get("timeout_list", [])
     
-    # Clean expired timeouts
     current_time = datetime.now()
     active_timeouts = []
     for entry in timeout_list:
@@ -719,10 +690,9 @@ async def timedout_users(interaction: discord.Interaction):
             description="No users are currently timed out from using the bot.",
             color=INFO_COLOR
         )
-        await interaction.response.send_message(embed=embed, ephemeral=True)
+        await interaction.followup.send(embed=embed, ephemeral=True)
         return
     
-    # Update data by removing expired timeouts
     data["timeout_list"] = active_timeouts
     save_data(data)
     
@@ -751,7 +721,7 @@ async def timedout_users(interaction: discord.Interaction):
             color=PROGRESS_COLOR
         )
         embed.set_footer(text=f"Total: {len(active_timeouts)} timed out users")
-        await interaction.response.send_message(embed=embed, ephemeral=(i==0))
+        await interaction.followup.send(embed=embed, ephemeral=(i==0))
 
 # ─── GPT Image 2 Automation ──────────────────────────────────────────────────
 
@@ -2304,7 +2274,6 @@ async def generate(
     ref8: discord.Attachment = None,
     ref9: discord.Attachment = None,
 ):
-    # Check if user is banned or timed out
     if await is_user_banned(interaction):
         return
     if await is_user_timeout(interaction):
@@ -2481,7 +2450,6 @@ async def generate(
 @discord.app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
 @tree.command(name="ping", description="Check if bot is alive")
 async def ping_cmd(interaction: discord.Interaction):
-    # Check if user is banned or timed out
     if await is_user_banned(interaction):
         return
     if await is_user_timeout(interaction):
@@ -2557,22 +2525,12 @@ async def models_cmd(interaction: discord.Interaction):
 @discord.app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
 @tree.command(name="owner", description="Show bot owner information")
 async def owner_cmd(interaction: discord.Interaction):
-    try:
-        owner = await client.fetch_user(OWNER_ID)
-        embed = discord.Embed(
-            title="👑 Bot Owner",
-            description=f"**Name:** {owner.name}\n**ID:** `{OWNER_ID}`",
-            color=BRAND_COLOR
-        )
-        embed.set_thumbnail(url=owner.display_avatar.url)
-        await interaction.response.send_message(embed=embed)
-    except:
-        embed = discord.Embed(
-            title="👑 Bot Owner",
-            description=f"**ID:** `{OWNER_ID}`",
-            color=BRAND_COLOR
-        )
-        await interaction.response.send_message(embed=embed)
+    embed = discord.Embed(
+        title="👑 Bot Owner",
+        description=f"**Bot created by:** <@1348735671044673636>\n**Owner ID:** `1348735671044673636`",
+        color=BRAND_COLOR
+    )
+    await interaction.response.send_message(embed=embed)
 
 # ─── تشغيل البوت ────────────────────────────────────────────────────────────
 
@@ -2586,5 +2544,4 @@ if __name__ == "__main__":
     
     print("🚀 Starting Discord Bot on Render...")
     print("📡 Bot will run 24/7!")
-    print(f"👑 Bot Owner ID: {OWNER_ID}")
     client.run(TOKEN)
