@@ -20,6 +20,7 @@ from threading import Thread
 import ssl
 from requests.adapters import HTTPAdapter
 from urllib3.poolmanager import PoolManager
+from datetime import datetime, timedelta
 
 # Custom adapter to ignore SSL verification
 class SSLAdapter(HTTPAdapter):
@@ -80,7 +81,692 @@ def keep_alive():
     t = Thread(target=run_web)
     t.start()
 
-# ─── GPT Image 2 Automation ──────────────────────────────────────────────────
+# ─── Admin Commands - Data Management ─────────────────────────────────────────
+
+DATA_FILE = "cmd_config.json"
+
+def load_data():
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE, "r") as f:
+            return json.load(f)
+    return {"blacklist": [], "timeout_list": []}
+
+def save_data(data):
+    with open(DATA_FILE, "w") as f:
+        json.dump(data, f, indent=4)
+
+def parse_duration(duration_str: str) -> int:
+    """Parse duration string like '1h', '30m', '2d' into seconds"""
+    total_seconds = 0
+    pattern = r'(\d+)([smhd])'
+    matches = re.findall(pattern, duration_str.lower())
+    
+    for value, unit in matches:
+        value = int(value)
+        if unit == 's':
+            total_seconds += value
+        elif unit == 'm':
+            total_seconds += value * 60
+        elif unit == 'h':
+            total_seconds += value * 3600
+        elif unit == 'd':
+            total_seconds += value * 86400
+    
+    return total_seconds
+
+def format_duration_remaining(seconds: int) -> str:
+    """Format seconds into readable duration"""
+    days = seconds // 86400
+    hours = (seconds % 86400) // 3600
+    minutes = (seconds % 3600) // 60
+    secs = seconds % 60
+    
+    parts = []
+    if days > 0:
+        parts.append(f"{days}d")
+    if hours > 0:
+        parts.append(f"{hours}h")
+    if minutes > 0:
+        parts.append(f"{minutes}m")
+    if secs > 0 and days == 0 and hours == 0:
+        parts.append(f"{secs}s")
+    
+    return " ".join(parts) if parts else "0s"
+
+# ─── Check Functions ─────────────────────────────────────────────────────────
+
+async def is_user_banned(interaction: discord.Interaction) -> bool:
+    """Check if user is banned from using the bot"""
+    data = load_data()
+    user_id = str(interaction.user.id)
+    
+    if user_id in data.get("blacklist", []):
+        embed = discord.Embed(
+            title="⛔ You Are Banned",
+            description="You have been banned from using this bot's commands.",
+            color=ERROR_COLOR
+        )
+        embed.set_footer(text="Contact server administrator for more information.")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return True
+    return False
+
+async def is_user_timeout(interaction: discord.Interaction) -> bool:
+    """Check if user is timed out from using the bot"""
+    data = load_data()
+    user_id = str(interaction.user.id)
+    timeout_list = data.get("timeout_list", [])
+    
+    for entry in timeout_list:
+        if entry["user_id"] == user_id:
+            expires_at = datetime.fromisoformat(entry["expires_at"])
+            if datetime.now() < expires_at:
+                remaining = int((expires_at - datetime.now()).total_seconds())
+                embed = discord.Embed(
+                    title="⏰ You Are Timed Out",
+                    description=f"You have been timed out from using this bot's commands.\n\n**Remaining time:** `{format_duration_remaining(remaining)}`\n**Reason:** {entry.get('reason', 'No reason provided')}",
+                    color=PROGRESS_COLOR
+                )
+                embed.set_footer(text="Contact server administrator for more information.")
+                await interaction.response.send_message(embed=embed, ephemeral=True)
+                return True
+            else:
+                # Remove expired timeout
+                timeout_list.remove(entry)
+                save_data(data)
+                return False
+    return False
+
+async def check_cmd_status(interaction: discord.Interaction, command_name: str) -> bool:
+    """Check if command is down/buggy or if user is banned/timeout"""
+    # Check if user is banned
+    if await is_user_banned(interaction):
+        return False
+    
+    # Check if user is timed out
+    if await is_user_timeout(interaction):
+        return False
+    
+    data = load_data()
+    guild_id = str(interaction.guild.id) if interaction.guild else None
+    
+    # If no guild (DM) or no config for this guild, allow
+    if not guild_id or guild_id not in data or command_name not in data[guild_id]:
+        return True
+    
+    cmd_data = data[guild_id][command_name]
+    mode = cmd_data.get("mode", "normal")
+    
+    if mode == "down":
+        embed = discord.Embed(
+            title=cmd_data.get("title", "Command Down"),
+            description=cmd_data.get("description", "This command is currently down."),
+            color=cmd_data.get("color", ERROR_COLOR)
+        )
+        embed.set_footer(text="Please try again later.")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return False
+    
+    if mode == "buggy":
+        embed = discord.Embed(
+            description="⚠️ **This Command is Buggy!** Some features may not work correctly.",
+            color=PROGRESS_COLOR
+        )
+        await interaction.followup.send(embed=embed, ephemeral=True)
+        return True
+    
+    return True
+
+# ─── Setstatus Command (Customize Command) ───────────────────────────────────
+
+@discord.app_commands.allowed_installs(guilds=True, users=False)
+@discord.app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
+@tree.command(name="setstatus", description="Customize a command's behavior (Admin only)")
+@app_commands.describe(
+    command_name="Name of the command to customize",
+    mode="Select the mode for the command",
+    title="Title for the embed (optional)",
+    description="Description for the embed (optional)",
+    color="Hex color for the embed like FF0000 (optional)"
+)
+@app_commands.choices(mode=[
+    app_commands.Choice(name="Normal - Command works fine", value="normal"),
+    app_commands.Choice(name="Down - Command is down show embed", value="down"),
+    app_commands.Choice(name="Buggy - Command is buggy show warning", value="buggy"),
+])
+async def setstatus(
+    interaction: discord.Interaction,
+    command_name: str,
+    mode: app_commands.Choice[str],
+    title: str = None,
+    description: str = None,
+    color: str = None
+):
+    if not interaction.user.guild_permissions.administrator:
+        embed = discord.Embed(
+            description="❌ You don't have permission to use this command.",
+            color=ERROR_COLOR
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+
+    data = load_data()
+    guild_id = str(interaction.guild.id)
+
+    if guild_id not in data:
+        data[guild_id] = {}
+
+    if mode.value == "normal":
+        if command_name in data[guild_id]:
+            del data[guild_id][command_name]
+        save_data(data)
+        embed = discord.Embed(
+            description=f"✅ `/{command_name}` has been set back to **Normal** mode.",
+            color=SUCCESS_COLOR
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+
+    hex_color = BRAND_COLOR
+    if color:
+        try:
+            hex_color = int(color.replace("#", ""), 16)
+        except ValueError:
+            pass
+
+    data[guild_id][command_name] = {
+        "mode": mode.value,
+        "title": title or ("Command Down" if mode.value == "down" else "Command Buggy"),
+        "description": description or (
+            f"The command `/{command_name}` is currently **down** for maintenance. Please try again later."
+            if mode.value == "down"
+            else f"The command `/{command_name}` is currently experiencing issues. Some features may not work."
+        ),
+        "color": hex_color
+    }
+
+    save_data(data)
+
+    preview_embed = discord.Embed(
+        title="⚙️ Command Customized",
+        color=BRAND_COLOR
+    )
+    preview_embed.add_field(name="Command", value=f"`/{command_name}`", inline=True)
+    preview_embed.add_field(name="Mode", value=mode.name, inline=True)
+    preview_embed.add_field(
+        name="Preview Embed",
+        value=f"**{data[guild_id][command_name]['title']}**\n{data[guild_id][command_name]['description']}",
+        inline=False
+    )
+    preview_embed.set_footer(text=f"Configured by {interaction.user}", icon_url=interaction.user.display_avatar.url)
+
+    await interaction.response.send_message(embed=preview_embed, ephemeral=True)
+
+# ─── Ban Command (Permanent ban from using bot) ──────────────────────────────
+
+@discord.app_commands.allowed_installs(guilds=True, users=False)
+@discord.app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
+@tree.command(name="ban", description="Ban a user from using the bot permanently (Admin only)")
+@app_commands.describe(
+    user="The user to ban from using the bot",
+    reason="Reason for the ban (optional)"
+)
+async def ban_user(
+    interaction: discord.Interaction,
+    user: discord.User,
+    reason: str = None
+):
+    if not interaction.user.guild_permissions.administrator:
+        embed = discord.Embed(
+            description="❌ You don't have permission to use this command. Requires **Administrator** permission.",
+            color=ERROR_COLOR
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+    
+    if user == client.user:
+        embed = discord.Embed(
+            description="❌ You cannot ban the bot!",
+            color=ERROR_COLOR
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+    
+    if interaction.guild:
+        member = interaction.guild.get_member(user.id)
+        if member and member.guild_permissions.administrator:
+            embed = discord.Embed(
+                description="❌ You cannot ban another administrator!",
+                color=ERROR_COLOR
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+    
+    data = load_data()
+    if "blacklist" not in data:
+        data["blacklist"] = []
+    
+    user_id = str(user.id)
+    if user_id in data["blacklist"]:
+        embed = discord.Embed(
+            description=f"❌ {user.mention} is already banned from using the bot.",
+            color=ERROR_COLOR
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+    
+    # Remove from timeout list if present
+    if "timeout_list" in data:
+        data["timeout_list"] = [entry for entry in data["timeout_list"] if entry["user_id"] != user_id]
+    
+    data["blacklist"].append(user_id)
+    
+    if "ban_reasons" not in data:
+        data["ban_reasons"] = {}
+    data["ban_reasons"][user_id] = {
+        "reason": reason or "No reason provided",
+        "banned_by": interaction.user.id,
+        "banned_at": datetime.now().isoformat()
+    }
+    
+    save_data(data)
+    
+    embed = discord.Embed(
+        title="✅ User Banned From Bot",
+        description=f"{user.mention} has been banned from using **all bot commands**.",
+        color=SUCCESS_COLOR,
+        timestamp=discord.utils.utcnow()
+    )
+    embed.add_field(name="User", value=f"{user}\n`{user.id}`", inline=True)
+    embed.add_field(name="Moderator", value=interaction.user.mention, inline=True)
+    embed.add_field(name="Reason", value=reason or "No reason provided", inline=False)
+    embed.set_thumbnail(url=user.display_avatar.url)
+    
+    await interaction.response.send_message(embed=embed)
+    
+    try:
+        dm_embed = discord.Embed(
+            title=f"⛔ You have been banned from using {client.user.name}",
+            description=f"**Server:** {interaction.guild.name if interaction.guild else 'Unknown'}\n**Reason:** {reason or 'No reason provided'}\n**Banned by:** {interaction.user}",
+            color=ERROR_COLOR
+        )
+        await user.send(embed=dm_embed)
+    except:
+        pass
+
+# ─── Unban Command ──────────────────────────────────────────────────────────
+
+@discord.app_commands.allowed_installs(guilds=True, users=False)
+@discord.app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
+@tree.command(name="unban", description="Unban a user from using the bot (Admin only)")
+@app_commands.describe(
+    user="The user to unban",
+    reason="Reason for the unban (optional)"
+)
+async def unban_user(
+    interaction: discord.Interaction,
+    user: discord.User,
+    reason: str = None
+):
+    if not interaction.user.guild_permissions.administrator:
+        embed = discord.Embed(
+            description="❌ You don't have permission to use this command.",
+            color=ERROR_COLOR
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+    
+    data = load_data()
+    user_id = str(user.id)
+    
+    if "blacklist" not in data or user_id not in data["blacklist"]:
+        embed = discord.Embed(
+            description=f"❌ {user.mention} is not banned from using the bot.",
+            color=ERROR_COLOR
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+    
+    data["blacklist"].remove(user_id)
+    
+    if "unban_history" not in data:
+        data["unban_history"] = {}
+    data["unban_history"][user_id] = {
+        "reason": reason or "No reason provided",
+        "unbanned_by": interaction.user.id,
+        "unbanned_at": datetime.now().isoformat()
+    }
+    
+    save_data(data)
+    
+    embed = discord.Embed(
+        title="✅ User Unbanned From Bot",
+        description=f"{user.mention} can now use bot commands again.",
+        color=SUCCESS_COLOR
+    )
+    embed.add_field(name="Moderator", value=interaction.user.mention, inline=True)
+    embed.add_field(name="Reason", value=reason or "No reason provided", inline=True)
+    
+    await interaction.response.send_message(embed=embed)
+    
+    try:
+        dm_embed = discord.Embed(
+            title=f"✅ You have been unbanned from using {client.user.name}",
+            description=f"**Server:** {interaction.guild.name if interaction.guild else 'Unknown'}\n**Reason:** {reason or 'No reason provided'}",
+            color=SUCCESS_COLOR
+        )
+        await user.send(embed=dm_embed)
+    except:
+        pass
+
+# ─── Banned Users Command ───────────────────────────────────────────────────
+
+@discord.app_commands.allowed_installs(guilds=True, users=False)
+@discord.app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
+@tree.command(name="banned_users", description="Show all users banned from using the bot (Admin only)")
+async def banned_users(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.administrator:
+        embed = discord.Embed(
+            description="❌ You don't have permission to use this command.",
+            color=ERROR_COLOR
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+    
+    data = load_data()
+    blacklist = data.get("blacklist", [])
+    ban_reasons = data.get("ban_reasons", {})
+    
+    if not blacklist:
+        embed = discord.Embed(
+            title="📋 Banned Users",
+            description="No users are currently banned from using the bot.",
+            color=INFO_COLOR
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+    
+    banned_list = []
+    for user_id in blacklist:
+        try:
+            user = await client.fetch_user(int(user_id))
+            user_name = f"{user.name} (`{user_id}`)"
+        except:
+            user_name = f"Unknown User (`{user_id}`)"
+        
+        reason = ban_reasons.get(user_id, {}).get("reason", "No reason provided")
+        banned_by_id = ban_reasons.get(user_id, {}).get("banned_by", "Unknown")
+        
+        try:
+            banned_by_user = await client.fetch_user(int(banned_by_id)) if banned_by_id != "Unknown" else None
+            banned_by = banned_by_user.name if banned_by_user else str(banned_by_id)
+        except:
+            banned_by = str(banned_by_id)
+        
+        banned_list.append(f"**{user_name}**\n└ Reason: {reason}\n└ Banned by: {banned_by}")
+    
+    chunks = [banned_list[i:i+10] for i in range(0, len(banned_list), 10)]
+    
+    for i, chunk in enumerate(chunks):
+        embed = discord.Embed(
+            title=f"📋 Banned Users (Page {i+1}/{len(chunks)})",
+            description="\n\n".join(chunk),
+            color=ERROR_COLOR
+        )
+        embed.set_footer(text=f"Total: {len(blacklist)} banned users")
+        await interaction.response.send_message(embed=embed, ephemeral=(i==0))
+
+# ─── Timeout Command ────────────────────────────────────────────────────────
+
+@discord.app_commands.allowed_installs(guilds=True, users=False)
+@discord.app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
+@tree.command(name="timeout", description="Timeout a user from using the bot for a specific duration (Admin only)")
+@app_commands.describe(
+    user="The user to timeout from using the bot",
+    duration="How long to timeout the user (e.g., 1h, 30m, 2d, 1h30m)",
+    reason="Reason for the timeout (optional)"
+)
+async def timeout_user(
+    interaction: discord.Interaction,
+    user: discord.User,
+    duration: str,
+    reason: str = None
+):
+    if not interaction.user.guild_permissions.administrator:
+        embed = discord.Embed(
+            description="❌ You don't have permission to use this command. Requires **Administrator** permission.",
+            color=ERROR_COLOR
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+    
+    if user == client.user:
+        embed = discord.Embed(
+            description="❌ You cannot timeout the bot!",
+            color=ERROR_COLOR
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+    
+    if interaction.guild:
+        member = interaction.guild.get_member(user.id)
+        if member and member.guild_permissions.administrator:
+            embed = discord.Embed(
+                description="❌ You cannot timeout another administrator!",
+                color=ERROR_COLOR
+            )
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+            return
+    
+    seconds = parse_duration(duration)
+    if seconds <= 0:
+        embed = discord.Embed(
+            description="❌ Invalid duration format. Use formats like: `30m`, `2h`, `1d`, `1h30m`",
+            color=ERROR_COLOR
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+    
+    data = load_data()
+    if "timeout_list" not in data:
+        data["timeout_list"] = []
+    
+    user_id = str(user.id)
+    
+    # Remove existing timeout if any
+    data["timeout_list"] = [entry for entry in data["timeout_list"] if entry["user_id"] != user_id]
+    
+    # Remove from blacklist if present (can't be both)
+    if user_id in data.get("blacklist", []):
+        embed = discord.Embed(
+            description=f"❌ {user.mention} is permanently banned. Use `unban` first.",
+            color=ERROR_COLOR
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+    
+    expires_at = datetime.now() + timedelta(seconds=seconds)
+    
+    data["timeout_list"].append({
+        "user_id": user_id,
+        "expires_at": expires_at.isoformat(),
+        "reason": reason or "No reason provided",
+        "timed_out_by": interaction.user.id,
+        "timed_out_at": datetime.now().isoformat()
+    })
+    
+    save_data(data)
+    
+    embed = discord.Embed(
+        title="⏰ User Timed Out From Bot",
+        description=f"{user.mention} has been timed out from using **all bot commands**.",
+        color=PROGRESS_COLOR,
+        timestamp=discord.utils.utcnow()
+    )
+    embed.add_field(name="User", value=f"{user}\n`{user.id}`", inline=True)
+    embed.add_field(name="Moderator", value=interaction.user.mention, inline=True)
+    embed.add_field(name="Duration", value=f"`{format_duration_remaining(seconds)}`", inline=True)
+    embed.add_field(name="Reason", value=reason or "No reason provided", inline=False)
+    embed.add_field(name="Expires At", value=f"<t:{int(expires_at.timestamp())}:R>", inline=False)
+    embed.set_thumbnail(url=user.display_avatar.url)
+    
+    await interaction.response.send_message(embed=embed)
+    
+    try:
+        dm_embed = discord.Embed(
+            title=f"⏰ You have been timed out from using {client.user.name}",
+            description=f"**Server:** {interaction.guild.name if interaction.guild else 'Unknown'}\n**Duration:** {format_duration_remaining(seconds)}\n**Reason:** {reason or 'No reason provided'}\n**Timed out by:** {interaction.user}",
+            color=PROGRESS_COLOR
+        )
+        await user.send(embed=dm_embed)
+    except:
+        pass
+
+# ─── Untimeout Command ──────────────────────────────────────────────────────
+
+@discord.app_commands.allowed_installs(guilds=True, users=False)
+@discord.app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
+@tree.command(name="untimeout", description="Remove timeout from a user (Admin only)")
+@app_commands.describe(
+    user="The user to remove timeout from",
+    reason="Reason for removing the timeout (optional)"
+)
+async def untimeout_user(
+    interaction: discord.Interaction,
+    user: discord.User,
+    reason: str = None
+):
+    if not interaction.user.guild_permissions.administrator:
+        embed = discord.Embed(
+            description="❌ You don't have permission to use this command.",
+            color=ERROR_COLOR
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+    
+    data = load_data()
+    user_id = str(user.id)
+    timeout_list = data.get("timeout_list", [])
+    
+    # Check if user is timed out
+    user_timeout = None
+    for entry in timeout_list:
+        if entry["user_id"] == user_id:
+            user_timeout = entry
+            break
+    
+    if not user_timeout:
+        embed = discord.Embed(
+            description=f"❌ {user.mention} is not currently timed out.",
+            color=ERROR_COLOR
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+    
+    # Remove timeout
+    data["timeout_list"] = [entry for entry in timeout_list if entry["user_id"] != user_id]
+    
+    if "untimeout_history" not in data:
+        data["untimeout_history"] = {}
+    data["untimeout_history"][user_id] = {
+        "reason": reason or "No reason provided",
+        "original_reason": user_timeout.get("reason", "No reason"),
+        "original_duration": format_duration_remaining(int((datetime.fromisoformat(user_timeout["expires_at"]) - datetime.now()).total_seconds())) if datetime.fromisoformat(user_timeout["expires_at"]) > datetime.now() else "Expired",
+        "removed_by": interaction.user.id,
+        "removed_at": datetime.now().isoformat()
+    }
+    
+    save_data(data)
+    
+    embed = discord.Embed(
+        title="✅ Timeout Removed From Bot",
+        description=f"{user.mention} can now use bot commands again.",
+        color=SUCCESS_COLOR
+    )
+    embed.add_field(name="Moderator", value=interaction.user.mention, inline=True)
+    embed.add_field(name="Reason", value=reason or "No reason provided", inline=True)
+    
+    await interaction.response.send_message(embed=embed)
+    
+    try:
+        dm_embed = discord.Embed(
+            title=f"✅ Your timeout from using {client.user.name} has been removed",
+            description=f"**Server:** {interaction.guild.name if interaction.guild else 'Unknown'}\n**Reason:** {reason or 'No reason provided'}",
+            color=SUCCESS_COLOR
+        )
+        await user.send(embed=dm_embed)
+    except:
+        pass
+
+# ─── Timed Out Users Command ─────────────────────────────────────────────────
+
+@discord.app_commands.allowed_installs(guilds=True, users=False)
+@discord.app_commands.allowed_contexts(guilds=True, dms=False, private_channels=False)
+@tree.command(name="timedout_users", description="Show all users currently timed out from using the bot (Admin only)")
+async def timedout_users(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.administrator:
+        embed = discord.Embed(
+            description="❌ You don't have permission to use this command.",
+            color=ERROR_COLOR
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+    
+    data = load_data()
+    timeout_list = data.get("timeout_list", [])
+    
+    # Clean expired timeouts
+    current_time = datetime.now()
+    active_timeouts = []
+    for entry in timeout_list:
+        expires_at = datetime.fromisoformat(entry["expires_at"])
+        if current_time < expires_at:
+            active_timeouts.append(entry)
+        else:
+            # Skip expired
+            pass
+    
+    if not active_timeouts:
+        embed = discord.Embed(
+            title="📋 Timed Out Users",
+            description="No users are currently timed out from using the bot.",
+            color=INFO_COLOR
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+    
+    # Update data by removing expired timeouts
+    data["timeout_list"] = active_timeouts
+    save_data(data)
+    
+    timeout_list_display = []
+    for entry in active_timeouts:
+        user_id = entry["user_id"]
+        expires_at = datetime.fromisoformat(entry["expires_at"])
+        remaining = int((expires_at - current_time).total_seconds())
+        
+        try:
+            user = await client.fetch_user(int(user_id))
+            user_name = f"{user.name} (`{user_id}`)"
+        except:
+            user_name = f"Unknown User (`{user_id}`)"
+        
+        reason = entry.get("reason", "No reason provided")
+        
+        timeout_list_display.append(f"**{user_name}**\n└ Remaining: `{format_duration_remaining(remaining)}`\n└ Reason: {reason}")
+    
+    chunks = [timeout_list_display[i:i+10] for i in range(0, len(timeout_list_display), 10)]
+    
+    for i, chunk in enumerate(chunks):
+        embed = discord.Embed(
+            title=f"📋 Timed Out Users (Page {i+1}/{len(chunks)})",
+            description="\n\n".join(chunk),
+            color=PROGRESS_COLOR
+        )
+        embed.set_footer(text=f"Total: {len(active_timeouts)} timed out users")
+        await interaction.response.send_message(embed=embed, ephemeral=(i==0))
+
+# ─── GPT Image 2 Automation (Continue from original) ─────────────────────────
 
 class GPTImage2Automation:
     def __init__(self):
@@ -97,7 +783,6 @@ class GPTImage2Automation:
         })
         
     def generate_credentials(self):
-        """Generate random email, password and username"""
         letters = ''.join(random.choices(string.ascii_lowercase, k=6))
         numbers = ''.join(random.choices(string.digits, k=2))
         email = f"{letters}{numbers}@gmail.com"
@@ -112,27 +797,23 @@ class GPTImage2Automation:
         return email, password, username
     
     def sign_up(self, email, password, name):
-        """Sign up using the simpler endpoint"""
         url = f"{self.base_url}/api/auth/sign-up/email"
         data = {"email": email, "password": password, "name": name}
         response = self.session.post(url, json=data)
         return response.json()
     
     def get_session(self, token):
-        """Get session info"""
         url = f"{self.base_url}/api/auth/get-session"
         self.session.cookies.set("__Secure-better-auth.session_token", token)
         response = self.session.get(url)
         return response.json()
     
     def get_user_info(self):
-        """Get user info including credits"""
         url = f"{self.base_url}/api/user/get-user-info"
         response = self.session.post(url)
         return response.json()
     
     def generate_image_text_to_image(self, prompt):
-        """Generate image with text-to-image"""
         url = f"{self.base_url}/api/ai/generate"
         data = {
             "mediaType": "image",
@@ -150,7 +831,6 @@ class GPTImage2Automation:
         return response.json()
     
     def generate_image_image_to_image(self, prompt, image_urls):
-        """Generate image with image-to-image (reference images)"""
         url = f"{self.base_url}/api/ai/generate"
         data = {
             "mediaType": "image",
@@ -161,7 +841,7 @@ class GPTImage2Automation:
             "options": {
                 "image_size": "auto",
                 "quality": "medium",
-                "image_urls": image_urls[:4]  # Max 4 images
+                "image_urls": image_urls[:4]
             },
             "credits": 5
         }
@@ -169,15 +849,12 @@ class GPTImage2Automation:
         return response.json()
     
     def query_task(self, task_uuid):
-        """Query task status"""
         url = f"{self.base_url}/api/ai/query"
         data = {"taskId": task_uuid}
         response = self.session.post(url, json=data)
         return response.json()
     
     def upload_image_to_gptimage2(self, image_bytes, filename):
-        """Upload reference image to GPTImage2 CDN"""
-        # First, get upload URL
         upload_url_res = self.session.post(
             f"{self.base_url}/api/upload/generate-url",
             json={"filename": filename, "type": "image"}
@@ -190,7 +867,6 @@ class GPTImage2Automation:
         upload_url = upload_data['data']['url']
         file_url = upload_data['data']['fileUrl']
         
-        # Upload image
         files = {'file': (filename, image_bytes, f'image/{filename.split(".")[-1]}')}
         upload_response = requests.post(upload_url, files=files)
         
@@ -200,26 +876,20 @@ class GPTImage2Automation:
         return file_url
     
     def run(self, prompt, ref_images=None):
-        """Main execution flow with optional reference images"""
-        # Step 1: Generate credentials
         email, password, username = self.generate_credentials()
         
-        # Step 2: Sign up
         signup_response = self.sign_up(email, password, username)
         
         if 'token' not in signup_response:
             raise RuntimeError(f"Signup failed: {signup_response}")
         
         token = signup_response['token']
-        user = signup_response['user']
         
-        # Step 3: Get session (automatically sets cookies)
         session_data = self.get_session(token)
         
         if 'session' not in session_data:
             raise RuntimeError(f"Session error: {session_data}")
         
-        # Step 4: Get user info and credits
         user_info = self.get_user_info()
         
         if user_info.get('code') != 0:
@@ -230,17 +900,15 @@ class GPTImage2Automation:
         if credits < 5:
             raise RuntimeError(f"Not enough credits! Need 5, have {credits}")
         
-        # Step 5: Upload reference images if any
         image_urls = []
         if ref_images:
-            for idx, (image_bytes, filename, file_ext) in enumerate(ref_images[:4]):  # Max 4 reference images
+            for idx, (image_bytes, filename, file_ext) in enumerate(ref_images[:4]):
                 try:
                     uploaded_url = self.upload_image_to_gptimage2(image_bytes, filename)
                     image_urls.append(uploaded_url)
                 except Exception as e:
                     print(f"Failed to upload reference image {idx+1}: {e}")
         
-        # Step 6: Generate image
         if image_urls:
             generate_response = self.generate_image_image_to_image(prompt, image_urls)
         else:
@@ -251,7 +919,6 @@ class GPTImage2Automation:
         
         task_uuid = generate_response['data']['id']
         
-        # Step 7: Poll for completion
         max_attempts = 60
         attempt = 0
         
@@ -263,7 +930,6 @@ class GPTImage2Automation:
                 status = status_response['data'].get('status')
                 
                 if status == "success":
-                    # Parse the task result for the image URL
                     task_result = status_response['data'].get('taskResult', '{}')
                     if isinstance(task_result, str):
                         task_result = _json.loads(task_result)
@@ -278,7 +944,6 @@ class GPTImage2Automation:
                                 "download_url": image_url,
                             }
                     
-                    # Try alternative location
                     task_info = status_response['data'].get('taskInfo', '{}')
                     if isinstance(task_info, str):
                         task_info = _json.loads(task_info)
@@ -304,7 +969,6 @@ class GPTImage2Automation:
         raise TimeoutError("Timeout waiting for image generation")
 
 def run_gptimage2_generation(prompt: str, ref_images: list = None) -> dict:
-    """Generate image using GPT Image 2 with reference image support"""
     automation = GPTImage2Automation()
     return automation.run(prompt, ref_images)
 
@@ -644,7 +1308,7 @@ def run_synthesia_generation(prompt: str, size: str, model: str) -> dict:
         "download_url": result.get("downloadUrl", ""),
     }
 
-# ─── OreateAI image generation (Nano Banana 2) with correct upload method ───
+# ─── OreateAI image generation (Nano Banana 2) ───────────────────────────────
 
 _OREATE_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 
@@ -672,10 +1336,8 @@ def _oreate_encrypt_password(plain_text: str, public_key_pem: str) -> str:
     return _base64.b64encode(cipher.encrypt(plain_text.encode())).decode()
 
 def _oreate_upload_image_to_gcs(image_bytes: bytes, filename: str, ext: str, session_cookies: dict) -> dict:
-    """Upload image to GCS using the correct method from oreate_upload.ts"""
     clean_name = re.sub(r"\.[^.]+$", "", filename)
     
-    # Step 1: Get upload token from OreateAI
     token_res = requests.post(
         f"{OREATE_BASE}/oreate/convert/getuploadbostoken",
         headers={
@@ -697,11 +1359,9 @@ def _oreate_upload_image_to_gcs(image_bytes: bytes, filename: str, ext: str, ses
     if token_json.get("status", {}).get("code") != 0:
         raise RuntimeError(f"Upload token failed: {token_json.get('status', {}).get('msg')}")
     
-    # Get key data
     key_list = token_json.get("data", {}).get("KeyList", {})
     key_data = key_list.get(f"{clean_name}.{ext}")
     if not key_data and key_list:
-        # Try to get first available key
         key_data = list(key_list.values())[0]
     if not key_data:
         raise RuntimeError(f"No upload token key received. Available: {list(key_list.keys())}")
@@ -711,7 +1371,6 @@ def _oreate_upload_image_to_gcs(image_bytes: bytes, filename: str, ext: str, ses
     session_key = key_data["sessionkey"]
     content_type = f"image/{'jpeg' if ext == 'jpg' else ext}"
     
-    # Step 2: Initialize GCS resumable upload
     gcs_init_url = (
         f"https://storage.googleapis.com/upload/storage/v1/b/{bucket}/o"
         f"?uploadType=resumable&name={requests.utils.quote(object_path, safe='')}"
@@ -736,7 +1395,6 @@ def _oreate_upload_image_to_gcs(image_bytes: bytes, filename: str, ext: str, ses
     if not upload_url:
         raise RuntimeError("GCS did not return upload URL")
     
-    # Step 3: Upload binary data to GCS
     put_res = requests.put(
         upload_url,
         headers={
@@ -750,7 +1408,6 @@ def _oreate_upload_image_to_gcs(image_bytes: bytes, filename: str, ext: str, ses
     if not put_res.ok:
         raise RuntimeError(f"GCS upload failed: {put_res.status_code}")
     
-    # Return attachment object for generation request
     return {
         "bos_url": object_path,
         "doc_title": clean_name,
@@ -763,11 +1420,9 @@ def _oreate_upload_image_to_gcs(image_bytes: bytes, filename: str, ext: str, ses
     }
 
 def _oreate_extract_image_url_from_stream(response_text: str) -> str:
-    """Extract image URL from SSE stream response"""
     if not response_text:
         return None
     
-    # Look for imgUrl or url in data events
     lines = response_text.split('\n')
     for line in lines:
         if line.startswith('data: '):
@@ -784,16 +1439,12 @@ def _oreate_extract_image_url_from_stream(response_text: str) -> str:
             except (_json.JSONDecodeError, KeyError):
                 pass
     
-    # Fallback: find URL in text
     m = re.search(r"(https?://[^\s\"'<>]+\.(jpg|jpeg|png|gif|webp|bmp)(\?[^\s\"'<>]*)?)", response_text, re.IGNORECASE)
     if m:
         return m.group(1)
     return None
 
 def run_oreate_generation(prompt: str, size: str, ref_images: list) -> dict:
-    """Generate image using Nano Banana 2 with correct upload method"""
-    
-    # Step 1: Get ticket and public key
     ticket_res = requests.get(
         f"{OREATE_BASE}/passport/api/getticket",
         headers={
@@ -812,15 +1463,12 @@ def run_oreate_generation(prompt: str, size: str, ref_images: list) -> dict:
     ticket_id = ticket_data["data"]["ticketID"]
     public_key = ticket_data["data"]["pk"]
     
-    # Extract cookies from ticket response
     cookies = ticket_res.cookies.get_dict()
     
-    # Step 2: Generate account credentials
     email = _oreate_generate_email()
     password = _oreate_generate_password()
     encrypted_password = _oreate_encrypt_password(password, public_key)
     
-    # Step 3: Create account
     signup_res = requests.post(
         f"{OREATE_BASE}/passport/api/emailsignupin",
         headers={
@@ -847,24 +1495,17 @@ def run_oreate_generation(prompt: str, size: str, ref_images: list) -> dict:
     if signup_data.get("status", {}).get("code") != 0:
         raise RuntimeError(f"OreateAI signup failed: {signup_data.get('status', {}).get('msg')}")
     
-    # Update cookies with session cookies
     session_cookies = signup_res.cookies.get_dict()
     session_cookies.update(cookies)
     
-    # Extract OUID if present
-    ouid = session_cookies.get('OUID', '')
-    
-    # Step 4: Upload reference images
     attachments = []
     for idx, (image_bytes, filename, file_ext) in enumerate(ref_images[:9]):
         try:
             att = _oreate_upload_image_to_gcs(image_bytes, filename, file_ext, session_cookies)
             attachments.append(att)
-            print(f"Uploaded reference image {idx+1}: {att['bos_url']}")
         except Exception as e:
             print(f"Ref {idx+1} upload FAILED: {e}")
     
-    # Step 5: Create chat session
     chat_res = requests.post(
         f"{OREATE_BASE}/oreate/create/chat",
         headers={
@@ -885,7 +1526,6 @@ def run_oreate_generation(prompt: str, size: str, ref_images: list) -> dict:
     if not chat_id:
         raise RuntimeError(f"OreateAI: no chatId in response")
     
-    # Step 6: Generate image via SSE stream
     jt_token = "31$eyJrIj4iOCI0Iix5IkciQEdIRExETEtPSEpOUiJJIkFqIjwiNTw9OUE5QT08Pz5CQSI+IjYzIlEiSlFSTlZOVTk5ODY1OiIzIit5IkYiQD9AIj4iOCJQIklHS09KUExQIi0ibSI/Il1Yem52dVYxXTV2M0t2R1grXGZBQDNqTjx6bk5vVDxyclRyY18pPC8tdGpGRkNhWHloM2l0NGNlZDNCd2dIdl1vKXRZQ0VeRWY2L0lcN3pOKTpEUkAtNFA8S0xnRFg1XjY9eTBcWFVxX2dEeHhNbUFqTWNMZU9mV1VRVnFIeXhRYHNyTlQzVUVnSDFsRWxbWlxuaEo7OzlpcExQSXNqVzY8cj49PVAqcmEwQV1JblxgPjVjbFFSLEE2TGV0cGdmR1gzTz8tWXZkUlpKZSlEWUE6WltrajpDQGVQMzZyM3A5bHNdYzxSY29USUlrWmNlb2MwTl5KLk5zVUR4NURnPjc6W3o1TFk/djFyR2o1V3hceilvNy9nUms0c2NRZjQ5djcwOipgL09YWXVFdEtnNDMtNylvT3Zzblc0dnBQV0d4T088Xm5xVFJIaTdcS2BrbkpQW11wLmlfb1VyUTMzbk42XixTQXFiU3k/LF9EW2BgeGwyYTMtbmYzOTVtR290LjxBMC09cWdCW1FJVHhkLT03ODpCZC8xQ2dWTDc1SyxOMi4seEA7UlQxKUlPfCk1X2BjO3MubVBScWJbODh4VWl1L0oscHRdclJXQV90Zmg1WWBJL2tVLjtcfDIyfGZnOmg9QUFDQ3BEQXN3SERNdkd5TXpPU1MuUFUzYzQ5In0="
     
     request_body = {
@@ -933,7 +1573,6 @@ def run_oreate_generation(prompt: str, size: str, ref_images: list) -> dict:
     )
     sse_res.raise_for_status()
     
-    # Parse SSE stream
     image_url = None
     full_response = ""
     
@@ -942,13 +1581,11 @@ def run_oreate_generation(prompt: str, size: str, ref_images: list) -> dict:
             continue
         full_response += chunk
         
-        # Try to extract image URL from each chunk
         extracted = _oreate_extract_image_url_from_stream(chunk)
         if extracted:
             image_url = extracted
             break
         
-        # Parse JSON from data lines
         lines = chunk.split("\n")
         for line in lines:
             if line.startswith("data: "):
@@ -966,7 +1603,6 @@ def run_oreate_generation(prompt: str, size: str, ref_images: list) -> dict:
         if image_url:
             break
     
-    # Final fallback extraction
     if not image_url:
         image_url = _oreate_extract_image_url_from_stream(full_response)
     
@@ -979,20 +1615,17 @@ def run_oreate_generation(prompt: str, size: str, ref_images: list) -> dict:
         "is_nanobanana2": True,
     }
 
-# ─── Wan 2.6 Video Generation with Reference Images ─────────────────────────────
+# ─── Wan 2.6 Video Generation ────────────────────────────────────────────────
 
 def _oreate_generate_video_password() -> str:
-    """Generate password for video account"""
     chars = []
     for _ in range(8):
         chars.append(random.choice("0123456789abcdef"))
     return "Aa" + "".join(chars) + "1"
 
 def _oreate_upload_video_reference_image(image_bytes: bytes, filename: str, ext: str, session_cookies: dict) -> dict:
-    """Upload reference image for video generation"""
     clean_name = re.sub(r"\.[^.]+$", "", filename)
     
-    # Step 1: Get upload token from OreateAI
     token_res = requests.post(
         f"{OREATE_BASE}/oreate/convert/getuploadbostoken",
         headers={
@@ -1014,7 +1647,6 @@ def _oreate_upload_video_reference_image(image_bytes: bytes, filename: str, ext:
     if token_json.get("status", {}).get("code") != 0:
         raise RuntimeError(f"Upload token failed: {token_json.get('status', {}).get('msg')}")
     
-    # Get key data
     key_list = token_json.get("data", {}).get("KeyList", {})
     key_data = key_list.get(f"{clean_name}.{ext}")
     if not key_data and key_list:
@@ -1027,7 +1659,6 @@ def _oreate_upload_video_reference_image(image_bytes: bytes, filename: str, ext:
     session_key = key_data["sessionkey"]
     content_type = f"image/{'jpeg' if ext == 'jpg' else ext}"
     
-    # Step 2: Initialize GCS resumable upload
     gcs_init_url = (
         f"https://storage.googleapis.com/upload/storage/v1/b/{bucket}/o"
         f"?uploadType=resumable&name={requests.utils.quote(object_path, safe='')}"
@@ -1052,7 +1683,6 @@ def _oreate_upload_video_reference_image(image_bytes: bytes, filename: str, ext:
     if not upload_url:
         raise RuntimeError("GCS did not return upload URL")
     
-    # Step 3: Upload binary data to GCS
     put_res = requests.put(
         upload_url,
         headers={
@@ -1066,7 +1696,6 @@ def _oreate_upload_video_reference_image(image_bytes: bytes, filename: str, ext:
     if not put_res.ok:
         raise RuntimeError(f"GCS upload failed: {put_res.status_code}")
     
-    # Return attachment object for generation request
     return {
         "bos_url": object_path,
         "doc_title": clean_name,
@@ -1079,9 +1708,6 @@ def _oreate_upload_video_reference_image(image_bytes: bytes, filename: str, ext:
     }
 
 def run_wan26_generation(prompt: str, size: str, ref_images: list = None) -> dict:
-    """Generate video using Wan 2.6 with reference images support"""
-    
-    # Step 1: Get ticket and public key (for video)
     ticket_res = requests.get(
         f"{OREATE_BASE}/passport/api/getticket",
         headers={
@@ -1100,15 +1726,12 @@ def run_wan26_generation(prompt: str, size: str, ref_images: list = None) -> dic
     ticket_id = ticket_data["data"]["ticketID"]
     public_key = ticket_data["data"]["pk"]
     
-    # Extract cookies from ticket response
     cookies = ticket_res.cookies.get_dict()
     
-    # Step 2: Generate account credentials
     email = _oreate_generate_email()
     password = _oreate_generate_video_password()
     encrypted_password = _oreate_encrypt_password(password, public_key)
     
-    # Step 3: Create account (using GGSEMVIDEO for video)
     signup_res = requests.post(
         f"{OREATE_BASE}/passport/api/emailsignupin",
         headers={
@@ -1135,22 +1758,18 @@ def run_wan26_generation(prompt: str, size: str, ref_images: list = None) -> dic
     if signup_data.get("status", {}).get("code") != 0:
         raise RuntimeError(f"Wan 2.6 signup failed: {signup_data.get('status', {}).get('msg')}")
     
-    # Update cookies with session cookies
     session_cookies = signup_res.cookies.get_dict()
     session_cookies.update(cookies)
     
-    # Step 4: Upload reference images (if any)
     attachments = []
     if ref_images:
         for idx, (image_bytes, filename, file_ext) in enumerate(ref_images[:9]):
             try:
                 att = _oreate_upload_video_reference_image(image_bytes, filename, file_ext, session_cookies)
                 attachments.append(att)
-                print(f"Uploaded reference image {idx+1} for video: {att['bos_url']}")
             except Exception as e:
                 print(f"Ref {idx+1} upload FAILED: {e}")
     
-    # Step 5: Create video chat session
     chat_res = requests.post(
         f"{OREATE_BASE}/oreate/create/chat",
         headers={
@@ -1171,7 +1790,6 @@ def run_wan26_generation(prompt: str, size: str, ref_images: list = None) -> dic
     if not chat_id:
         raise RuntimeError(f"Wan 2.6: no chatId in response")
     
-    # Step 6: Generate video via SSE stream
     jt_token = "31$eyJrIj4iOCI0Iix5IkciQEdIRExETEtPSEpOUiJJIkFqIjwiNTw9OUE5QT08Pz5CQSI+IjYzIlEiSlFSTlZOVTk5ODY1OiIzIit5IkYiQD9AIj4iOCJQIklHS09KUExQIi0ibSI/Il1Yem52dVYxXTV2M0t2R1grXGZBQDNqTjx6bk5vVDxyclRyY18pPC8tdGpGRkNhWHloM2l0NGNlZDNCd2dIdl1vKXRZQ0VeRWY2L0lcN3pOKTpEUkAtNFA8S0xnRFg1XjY9eTBcWFVxX2dEeHhNbUFqTWNMZU9mV1VRVnFIeXhRYHNyTlQzVUVnSDFsRWxbWlxuaEo7OzlpcExQSXNqVzY8cj49PVAqcmEwQV1JblxgPjVjbFFSLEE2TGV0cGdmR1gzTz8tWXZkUlpKZSlEWUE6WltrajpDQGVQMzZyM3A5bHNdYzxSY29USUlrWmNlb2MwTl5KLk5zVUR4NURnPjc6W3o1TFk/djFyR2o1V3hceilvNy9nUms0c2NRZjQ5djcwOipgL09YWXVFdEtnNDMtNylvT3Zzblc0dnBQV0d4T088Xm5xVFJIaTdcS2BrbkpQW11wLmlfb1VyUTMzbk42XixTQXFiU3k/LF9EW2BgeGwyYTMtbmYzOTVtR290LjxBMC09cWdCW1FJVHhkLT03ODpCZC8xQ2dWTDc1SyxOMi4seEA7UlQxKUlPfCk1X2BjO3MubVBScWJbODh4VWl1L0oscHRdclJXQV90Zmg1WWBJL2tVLjtcfDIyfGZnOmg9QUFDQ3BEQXN3SERNdkd5TXpPU1MuUFUzYzQ5In0="
     
     request_body = {
@@ -1219,7 +1837,6 @@ def run_wan26_generation(prompt: str, size: str, ref_images: list = None) -> dic
     )
     sse_res.raise_for_status()
     
-    # Parse SSE stream for video URL
     video_url = None
     full_response = ""
     
@@ -1228,7 +1845,6 @@ def run_wan26_generation(prompt: str, size: str, ref_images: list = None) -> dic
             continue
         full_response += chunk
         
-        # Look for video URLs in the stream
         lines = chunk.split("\n")
         for line in lines:
             if line.startswith("data: "):
@@ -1245,11 +1861,6 @@ def run_wan26_generation(prompt: str, size: str, ref_images: list = None) -> dic
                     if data.get("videoUrl"):
                         video_url = data["videoUrl"]
                         break
-                    if data.get("url"):
-                        url = data["url"]
-                        if url and any(url.endswith(ext) for ext in ['.mp4', '.mov', '.avi', '.webm', '.mkv']):
-                            video_url = url
-                            break
                 except (_json.JSONDecodeError, KeyError):
                     pass
         
@@ -1597,10 +2208,9 @@ def build_success_embed(prompt, size_label, duration, model_label, model_value="
     embed.add_field(name="🧠 Model", value=f"`{model_label}`", inline=True)
     embed.add_field(name="⏱️ Time Taken", value=f"`{format_duration(duration)}`", inline=True)
     
-    # Add reference images section if any
     if ref_images and len(ref_images) > 0:
         ref_text = ""
-        for idx, (_, filename, _) in enumerate(ref_images[:4], 1):  # GPT Image 2 supports up to 4 ref images
+        for idx, (_, filename, _) in enumerate(ref_images[:4], 1):
             ref_text += f"📷 **Ref {idx}:** `{filename}`\n"
         embed.add_field(name=f"🖼️ Reference Images ({len(ref_images)})", value=ref_text, inline=False)
     
@@ -1618,7 +2228,6 @@ def build_error_embed(error_msg, prompt, size_label, model_label, model_value=""
         embed.add_field(name="📏 Size", value=f"`{size_label}`", inline=True)
     embed.add_field(name="🧠 Model", value=f"`{model_label}`", inline=True)
     
-    # Add reference images section if any
     if ref_images and len(ref_images) > 0:
         ref_text = ""
         for idx, (_, filename, _) in enumerate(ref_images[:4], 1):
@@ -1708,6 +2317,12 @@ async def generate(
     ref8: discord.Attachment = None,
     ref9: discord.Attachment = None,
 ):
+    # Check if user is banned or timed out
+    if await is_user_banned(interaction):
+        return
+    if await is_user_timeout(interaction):
+        return
+    
     model_value = model.value if model else "nanobanana_pro"
     model_label = MODEL_LABELS.get(model_value, model_value)
 
@@ -1738,12 +2353,10 @@ async def generate(
     actual_prompt = prompt
 
     ref_images = []
-    # Allow reference images for GPT Image 2, Nano Banana 2, and Wan 2.6
     if model_value in ["gptimage_2", "nanobanana_2", "wan_2_6"]:
         raw_refs = [ref1, ref2, ref3, ref4, ref5, ref6, ref7, ref8, ref9]
         bad_refs = []
         
-        # For GPT Image 2, limit to 4 reference images
         max_refs = 4 if model_value == "gptimage_2" else 9
         
         for attachment in raw_refs[:max_refs]:
@@ -1835,19 +2448,15 @@ async def generate(
     download_url = result.get("download_url") or result.get("url")
     if download_url:
         try:
-            # Use the custom session that ignores SSL verification
             response = download_session.get(download_url, timeout=60)
             response.raise_for_status()
             media_bytes = response.content
             
-            # Determine if it's an image or video
             is_image = model_value not in VIDEO_MODELS or model_value in ["gptimage_2", "nanobanana_2"]
             ext = "png" if is_image else "mp4"
             filename = f"generated_media.{ext}"
             
-            # For videos, check file size (Discord has 25MB limit for attachments)
             if not is_image and len(media_bytes) > 25 * 1024 * 1024:
-                # Video too large for Discord, just provide download link
                 success_embed.add_field(
                     name="📥 Download",
                     value=f"[Click to download video]({download_url})",
@@ -1952,16 +2561,13 @@ async def models_cmd(interaction: discord.Interaction):
 # ─── تشغيل البوت ────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    # تشغيل خادم الويب أولاً
     keep_alive()
     
-    # التحقق من وجود التوكن
     TOKEN = os.environ.get("DISCORD_BOT_TOKEN")
     if not TOKEN:
         print("❌ ERROR: DISCORD_BOT_TOKEN environment variable not set!")
         exit(1)
     
-    # تشغيل البوت
     print("🚀 Starting Discord Bot on Render...")
     print("📡 Bot will run 24/7!")
     client.run(TOKEN)
