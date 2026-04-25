@@ -21,6 +21,11 @@ import ssl
 from requests.adapters import HTTPAdapter
 from urllib3.poolmanager import PoolManager
 from datetime import datetime, timedelta
+import nest_asyncio
+from playwright.async_api import async_playwright
+
+# Apply nest_asyncio for running async in sync context
+nest_asyncio.apply()
 
 # Custom adapter to ignore SSL verification
 class SSLAdapter(HTTPAdapter):
@@ -35,7 +40,7 @@ COGNITO_CLIENT_ID = "1kvg8re5bgu9ljqnnkjosu477k"
 USER_POOL_ID = "eu-west-1_7hEawdalF"
 GUERRILLA_API = "https://api.guerrillamail.com/ajax.php"
 OREATE_BASE = "https://www.oreateai.com"
-GPTIMAGE2_BASE = "https://gptimage2.im"
+GPTIMAGE2_BASE = "https://photogpt.io/ai-models/gpt-image-2"
 
 VALID_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff"}
 VIDEO_SIZES = ["1280x720", "720x1280"]
@@ -88,12 +93,12 @@ DATA_FILE = "cmd_config.json"
 def load_data():
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE, "r") as f:
-            return json.load(f)
+            return _json.load(f)
     return {"blacklist": [], "timeout_list": []}
 
 def save_data(data):
     with open(DATA_FILE, "w") as f:
-        json.dump(data, f, indent=4)
+        _json.dump(data, f, indent=4)
 
 def parse_duration(duration_str: str) -> int:
     total_seconds = 0
@@ -723,207 +728,109 @@ async def timedout_users(interaction: discord.Interaction):
         embed.set_footer(text=f"Total: {len(active_timeouts)} timed out users")
         await interaction.followup.send(embed=embed, ephemeral=(i==0))
 
-# ─── GPT Image 2 Automation ──────────────────────────────────────────────────
+# ─── GPT Image 2 Automation (Playwright Version) ──────────────────────────────────
 
 class GPTImage2Automation:
     def __init__(self):
         self.base_url = GPTIMAGE2_BASE
-        self.session = requests.Session()
-        self.session.headers.update({
-            "accept": "*/*",
-            "accept-language": "en-US,en;q=0.9",
-            "content-type": "application/json",
-            "dnt": "1",
-            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36",
-            "origin": GPTIMAGE2_BASE,
-            "referer": f"{GPTIMAGE2_BASE}/ai-image-generator"
-        })
+        self.session_id = "2f3d0ee4-6a11-4652-9d3a-516decb6c77f"
         
-    def generate_credentials(self):
-        letters = ''.join(random.choices(string.ascii_lowercase, k=6))
-        numbers = ''.join(random.choices(string.digits, k=2))
-        email = f"{letters}{numbers}@gmail.com"
+    async def run_async(self, prompt: str, ref_images: list = None) -> dict:
+        """Generate image using Playwright browser automation"""
         
-        capitals = ''.join(random.choices(string.ascii_uppercase, k=2))
-        smalls = ''.join(random.choices(string.ascii_lowercase, k=4))
-        nums = ''.join(random.choices(string.digits, k=3))
-        password = f"{capitals}{smalls}{nums}"
+        print(f"🎨 Generating image with prompt: {prompt}")
         
-        username = ''.join(random.choices(string.ascii_lowercase, k=4))
-        
-        return email, password, username
-    
-    def sign_up(self, email, password, name):
-        url = f"{self.base_url}/api/auth/sign-up/email"
-        data = {"email": email, "password": password, "name": name}
-        response = self.session.post(url, json=data)
-        return response.json()
-    
-    def get_session(self, token):
-        url = f"{self.base_url}/api/auth/get-session"
-        self.session.cookies.set("__Secure-better-auth.session_token", token)
-        response = self.session.get(url)
-        return response.json()
-    
-    def get_user_info(self):
-        url = f"{self.base_url}/api/user/get-user-info"
-        response = self.session.post(url)
-        return response.json()
-    
-    def generate_image_text_to_image(self, prompt):
-        url = f"{self.base_url}/api/ai/generate"
-        data = {
-            "mediaType": "image",
-            "scene": "text-to-image",
-            "provider": "fal",
-            "model": "openai/gpt-image-2",
-            "prompt": prompt,
-            "options": {
-                "image_size": "portrait_16_9",
-                "quality": "medium"
-            },
-            "credits": 5
-        }
-        response = self.session.post(url, json=data)
-        return response.json()
-    
-    def generate_image_image_to_image(self, prompt, image_urls):
-        url = f"{self.base_url}/api/ai/generate"
-        data = {
-            "mediaType": "image",
-            "scene": "image-to-image",
-            "provider": "fal",
-            "model": "openai/gpt-image-2",
-            "prompt": prompt,
-            "options": {
-                "image_size": "auto",
-                "quality": "medium",
-                "image_urls": image_urls[:4]
-            },
-            "credits": 5
-        }
-        response = self.session.post(url, json=data)
-        return response.json()
-    
-    def query_task(self, task_uuid):
-        url = f"{self.base_url}/api/ai/query"
-        data = {"taskId": task_uuid}
-        response = self.session.post(url, json=data)
-        return response.json()
-    
-    def upload_image_to_gptimage2(self, image_bytes, filename):
-        upload_url_res = self.session.post(
-            f"{self.base_url}/api/upload/generate-url",
-            json={"filename": filename, "type": "image"}
-        )
-        upload_data = upload_url_res.json()
-        
-        if upload_data.get('code') != 0:
-            raise RuntimeError(f"Failed to get upload URL: {upload_data}")
-        
-        upload_url = upload_data['data']['url']
-        file_url = upload_data['data']['fileUrl']
-        
-        files = {'file': (filename, image_bytes, f'image/{filename.split(".")[-1]}')}
-        upload_response = requests.post(upload_url, files=files)
-        
-        if upload_response.status_code != 200:
-            raise RuntimeError(f"Failed to upload image: {upload_response.status_code}")
-        
-        return file_url
-    
-    def run(self, prompt, ref_images=None):
-        email, password, username = self.generate_credentials()
-        
-        signup_response = self.sign_up(email, password, username)
-        
-        if 'token' not in signup_response:
-            raise RuntimeError(f"Signup failed: {signup_response}")
-        
-        token = signup_response['token']
-        
-        session_data = self.get_session(token)
-        
-        if 'session' not in session_data:
-            raise RuntimeError(f"Session error: {session_data}")
-        
-        user_info = self.get_user_info()
-        
-        if user_info.get('code') != 0:
-            raise RuntimeError(f"Error getting user info: {user_info}")
-        
-        credits = user_info['data']['credits']['remainingCredits']
-        
-        if credits < 5:
-            raise RuntimeError(f"Not enough credits! Need 5, have {credits}")
-        
-        image_urls = []
-        if ref_images:
-            for idx, (image_bytes, filename, file_ext) in enumerate(ref_images[:4]):
-                try:
-                    uploaded_url = self.upload_image_to_gptimage2(image_bytes, filename)
-                    image_urls.append(uploaded_url)
-                except Exception as e:
-                    print(f"Failed to upload reference image {idx+1}: {e}")
-        
-        if image_urls:
-            generate_response = self.generate_image_image_to_image(prompt, image_urls)
-        else:
-            generate_response = self.generate_image_text_to_image(prompt)
-        
-        if generate_response.get('code') != 0:
-            raise RuntimeError(f"Generation error: {generate_response}")
-        
-        task_uuid = generate_response['data']['id']
-        
-        max_attempts = 60
-        attempt = 0
-        
-        while attempt < max_attempts:
-            time.sleep(2)
-            status_response = self.query_task(task_uuid)
+        async with async_playwright() as p:
+            browser = await p.chromium.launch(
+                headless=True,
+                args=['--no-sandbox', '--disable-setuid-sandbox']
+            )
             
-            if status_response.get('code') == 0:
-                status = status_response['data'].get('status')
-                
-                if status == "success":
-                    task_result = status_response['data'].get('taskResult', '{}')
-                    if isinstance(task_result, str):
-                        task_result = _json.loads(task_result)
-                    
-                    images = task_result.get('images', [])
-                    
-                    if images:
-                        image_url = images[0].get('url')
+            # Create a new context with custom user agent
+            context = await browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36"
+            )
+            page = await context.new_page()
+            await page.set_viewport_size({"width": 1280, "height": 720})
+            
+            # Navigate to GPT Image 2 page
+            await page.goto(f"{self.base_url}?s={self.session_id}")
+            await asyncio.sleep(3)
+            
+            # Fill prompt
+            await page.fill("textarea[name='prompt']", prompt)
+            await asyncio.sleep(1)
+            
+            # Handle reference images if provided
+            if ref_images:
+                for idx, (image_bytes, filename, ext) in enumerate(ref_images[:4]):
+                    try:
+                        # Look for file input element
+                        file_input = await page.query_selector("input[type='file']")
+                        if file_input:
+                            # Save image temporarily and upload
+                            import tempfile
+                            with tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False) as tmp:
+                                tmp.write(image_bytes)
+                                tmp_path = tmp.name
+                            
+                            await file_input.set_input_files(tmp_path)
+                            await asyncio.sleep(2)
+                            
+                            # Clean up temp file
+                            os.unlink(tmp_path)
+                    except Exception as e:
+                        print(f"Failed to upload reference image {idx+1}: {e}")
+            
+            # Click Generate button
+            await page.click("button:has-text('Generate')")
+            print("⏳ Generating... This may take 20-40 seconds")
+            
+            # Wait for image to appear
+            image_url = None
+            for i in range(60):
+                await asyncio.sleep(5)
+                try:
+                    # Look for generated image
+                    img = await page.query_selector("img[src*='photogpt.io/temp/prediction_image']")
+                    if img:
+                        image_url = await img.get_attribute("src")
                         if image_url:
-                            return {
-                                "url": image_url,
-                                "download_url": image_url,
-                            }
+                            print(f"\n✅ Image generated!")
+                            break
                     
-                    task_info = status_response['data'].get('taskInfo', '{}')
-                    if isinstance(task_info, str):
-                        task_info = _json.loads(task_info)
-                    
-                    alt_images = task_info.get('images', [])
-                    if alt_images:
-                        image_url = alt_images[0].get('imageUrl') or alt_images[0].get('url')
-                        if image_url:
-                            return {
-                                "url": image_url,
-                                "download_url": image_url,
-                            }
-                    
-                    raise RuntimeError("No image URL found in response")
+                    # Alternative selector
+                    img = await page.query_selector("div.result img")
+                    if img:
+                        image_url = await img.get_attribute("src")
+                        if image_url and "photogpt.io" in image_url:
+                            print(f"\n✅ Image generated!")
+                            break
+                            
+                except Exception as e:
+                    print(f"   Error checking: {e}")
                 
-                elif status == "failed":
-                    raise RuntimeError(f"Task failed: {status_response['data'].get('taskInfo', {})}")
-                
-                elif status in ["pending", "processing"]:
-                    pass
-            attempt += 1
-        
-        raise TimeoutError("Timeout waiting for image generation")
+                if (i + 1) % 6 == 0:
+                    print(f"   Still generating... ({i+1}/60 attempts)")
+            
+            await browser.close()
+            
+            if not image_url:
+                raise RuntimeError("Generation failed or timed out")
+            
+            return {
+                "url": image_url,
+                "download_url": image_url,
+            }
+    
+    def run(self, prompt: str, ref_images: list = None) -> dict:
+        """Synchronous wrapper for run_async"""
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(self.run_async(prompt, ref_images))
+        finally:
+            loop.close()
 
 def run_gptimage2_generation(prompt: str, ref_images: list = None) -> dict:
     automation = GPTImage2Automation()
@@ -2080,10 +1987,11 @@ NB2_PROGRESS_STAGES = [
 
 GPTIMAGE2_PROGRESS_STAGES = [
     {"threshold": 0,   "label": "Initializing",      "emoji": "⚙️"},
-    {"threshold": 3,   "label": "Creating account",  "emoji": "📧"},
-    {"threshold": 8,   "label": "Setting up session","emoji": "🔐"},
+    {"threshold": 3,   "label": "Opening browser",   "emoji": "🌐"},
+    {"threshold": 8,   "label": "Loading page",      "emoji": "📄"},
+    {"threshold": 12,  "label": "Entering prompt",   "emoji": "✏️"},
     {"threshold": 15,  "label": "Uploading images",  "emoji": "📤"},
-    {"threshold": 25,  "label": "Generating image",  "emoji": "🎨"},
+    {"threshold": 18,  "label": "Generating image",  "emoji": "🎨"},
     {"threshold": 60,  "label": "Finalizing",        "emoji": "✨"},
 ]
 
@@ -2500,7 +2408,7 @@ async def models_cmd(interaction: discord.Interaction):
     embed.add_field(
         name="Image models",
         value=(
-            "`GPT Image 2` — OpenAI GPT Image 2 with up to 4 reference images\n"
+            "`GPT Image 2` — OpenAI GPT Image 2 with up to 4 reference images (Playwright browser automation)\n"
             "`Nano Banana Pro` — fast AI image generation\n"
             "`Nano Banana 2` — image generation with up to 9 reference images"
         ),
@@ -2544,4 +2452,5 @@ if __name__ == "__main__":
     
     print("🚀 Starting Discord Bot on Render...")
     print("📡 Bot will run 24/7!")
+    print("🎨 GPT Image 2 uses Playwright browser automation!")
     client.run(TOKEN)
