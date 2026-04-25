@@ -4,4 +4,5 @@ pycognito>=2023.12.0
 flask>=2.3.0
 pycryptodome>=3.19.0
 aiohttp>=3.9.0
-emailnator
+playwright>=1.40.0
+nest-asyncio>=1.5.8
