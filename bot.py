@@ -1741,7 +1741,8 @@ def run_wan26_generation(prompt: str, size: str, ref_images: list = None) -> dic
     )
     sse_res.raise_for_status()
     
-    video_url = None    full_response = ""
+    video_url = None
+    full_response = ""
     
     for chunk in sse_res.iter_content(chunk_size=None, decode_unicode=True):
         if not chunk:
