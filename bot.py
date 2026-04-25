@@ -728,75 +728,104 @@ async def timedout_users(interaction: discord.Interaction):
         embed.set_footer(text=f"Total: {len(active_timeouts)} timed out users")
         await interaction.followup.send(embed=embed, ephemeral=(i==0))
 
-# ─── GPT Image 2 Automation (Playwright Version) ──────────────────────────────────
+# ─── GPT Image 2 Automation (Playwright Version with Progress) ──────────────────────────────────
 
 class GPTImage2Automation:
     def __init__(self):
         self.base_url = GPTIMAGE2_BASE
         self.session_id = "2f3d0ee4-6a11-4652-9d3a-516decb6c77f"
         
-    async def run_async(self, prompt: str, ref_images: list = None) -> dict:
-        """Generate image using Playwright browser automation"""
+    async def run_async(self, prompt: str, ref_images: list = None, progress_callback=None) -> dict:
+        """Generate image using Playwright browser automation with progress updates"""
         
-        print(f"🎨 Generating image with prompt: {prompt}")
+        if progress_callback:
+            await progress_callback("🌐 Opening browser...", 5)
         
         async with async_playwright() as p:
             browser = await p.chromium.launch(
                 headless=True,
-                args=['--no-sandbox', '--disable-setuid-sandbox']
+                args=[
+                    '--no-sandbox', 
+                    '--disable-setuid-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-gpu'
+                ]
             )
             
-            # Create a new context with custom user agent
             context = await browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36"
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/128.0.0.0 Safari/537.36",
+                viewport={'width': 1280, 'height': 720}
             )
             page = await context.new_page()
-            await page.set_viewport_size({"width": 1280, "height": 720})
+            page.set_default_timeout(30000)
+            
+            if progress_callback:
+                await progress_callback("📄 Loading photogpt.io...", 10)
             
             # Navigate to GPT Image 2 page
-            await page.goto(f"{self.base_url}?s={self.session_id}")
-            await asyncio.sleep(3)
+            await page.goto(f"{self.base_url}?s={self.session_id}", wait_until='domcontentloaded')
+            await asyncio.sleep(2)
+            
+            if progress_callback:
+                await progress_callback("✏️ Entering your prompt...", 15)
             
             # Fill prompt
-            await page.fill("textarea[name='prompt']", prompt)
+            try:
+                await page.wait_for_selector("textarea[name='prompt']", timeout=10000)
+                await page.fill("textarea[name='prompt']", prompt)
+            except:
+                await page.fill("textarea", prompt)
+            
             await asyncio.sleep(1)
             
             # Handle reference images if provided
             if ref_images:
+                if progress_callback:
+                    await progress_callback(f"📤 Uploading {len(ref_images[:4])} reference image(s)...", 20)
+                
                 for idx, (image_bytes, filename, ext) in enumerate(ref_images[:4]):
                     try:
-                        # Look for file input element
                         file_input = await page.query_selector("input[type='file']")
                         if file_input:
-                            # Save image temporarily and upload
                             import tempfile
                             with tempfile.NamedTemporaryFile(suffix=f".{ext}", delete=False) as tmp:
                                 tmp.write(image_bytes)
                                 tmp_path = tmp.name
                             
                             await file_input.set_input_files(tmp_path)
-                            await asyncio.sleep(2)
-                            
-                            # Clean up temp file
+                            await asyncio.sleep(1)
                             os.unlink(tmp_path)
                     except Exception as e:
                         print(f"Failed to upload reference image {idx+1}: {e}")
             
-            # Click Generate button
-            await page.click("button:has-text('Generate')")
-            print("⏳ Generating... This may take 20-40 seconds")
+            if progress_callback:
+                await progress_callback("🎨 Generating image... (20-40 seconds)", 25)
             
-            # Wait for image to appear
+            # Click Generate button
+            try:
+                await page.click("button:has-text('Generate')")
+            except:
+                await page.click("button[type='submit']")
+            
+            # Wait for image to appear with progress updates
             image_url = None
-            for i in range(60):
+            start_time = asyncio.get_event_loop().time()
+            
+            for i in range(60):  # 5 minutes max
                 await asyncio.sleep(5)
+                elapsed = int(asyncio.get_event_loop().time() - start_time)
+                
+                # Send progress update every 10 seconds
+                if progress_callback and i % 2 == 0 and i > 0:
+                    progress_percent = min(25 + (elapsed * 2), 85)
+                    await progress_callback(f"🎨 Generating... ({elapsed}s elapsed)", progress_percent)
+                
                 try:
                     # Look for generated image
                     img = await page.query_selector("img[src*='photogpt.io/temp/prediction_image']")
                     if img:
                         image_url = await img.get_attribute("src")
                         if image_url:
-                            print(f"\n✅ Image generated!")
                             break
                     
                     # Alternative selector
@@ -804,19 +833,18 @@ class GPTImage2Automation:
                     if img:
                         image_url = await img.get_attribute("src")
                         if image_url and "photogpt.io" in image_url:
-                            print(f"\n✅ Image generated!")
                             break
                             
-                except Exception as e:
-                    print(f"   Error checking: {e}")
-                
-                if (i + 1) % 6 == 0:
-                    print(f"   Still generating... ({i+1}/60 attempts)")
+                except Exception:
+                    pass
             
             await browser.close()
             
             if not image_url:
-                raise RuntimeError("Generation failed or timed out")
+                raise RuntimeError("Generation failed or timed out after 5 minutes")
+            
+            if progress_callback:
+                await progress_callback("✅ Finalizing...", 95)
             
             return {
                 "url": image_url,
@@ -824,7 +852,7 @@ class GPTImage2Automation:
             }
     
     def run(self, prompt: str, ref_images: list = None) -> dict:
-        """Synchronous wrapper for run_async"""
+        """Synchronous wrapper - kept for compatibility"""
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         try:
@@ -832,9 +860,21 @@ class GPTImage2Automation:
         finally:
             loop.close()
 
-def run_gptimage2_generation(prompt: str, ref_images: list = None) -> dict:
+
+def run_gptimage2_generation(prompt: str, ref_images: list = None, progress_callback=None) -> dict:
+    """Wrapper that can accept progress callback"""
     automation = GPTImage2Automation()
-    return automation.run(prompt, ref_images)
+    
+    if progress_callback:
+        # Run with progress updates
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        try:
+            return loop.run_until_complete(automation.run_async(prompt, ref_images, progress_callback))
+        finally:
+            loop.close()
+    else:
+        return automation.run(prompt, ref_images)
 
 # ─── Temp email ──────────────────────────────────────────────────────────────
 
@@ -1701,8 +1741,7 @@ def run_wan26_generation(prompt: str, size: str, ref_images: list = None) -> dic
     )
     sse_res.raise_for_status()
     
-    video_url = None
-    full_response = ""
+    video_url = None    full_response = ""
     
     for chunk in sse_res.iter_content(chunk_size=None, decode_unicode=True):
         if not chunk:
@@ -1949,11 +1988,11 @@ def run_seedance2_generation(prompt: str) -> dict:
 
 # ─── Dispatch ─────────────────────────────────────────────────────────────────
 
-def run_generation(prompt: str, size: str, model: str, ref_images: list = None) -> dict:
+def run_generation(prompt: str, size: str, model: str, ref_images: list = None, progress_callback=None) -> dict:
     if model == "nanobanana_2":
         return run_oreate_generation(prompt, size, ref_images or [])
     if model == "gptimage_2":
-        return run_gptimage2_generation(prompt, ref_images or [])
+        return run_gptimage2_generation(prompt, ref_images or [], progress_callback)
     if model == "seedance_2":
         return run_seedance2_generation(prompt)
     if model == "wan_2_6":
@@ -2021,7 +2060,7 @@ def get_stage(elapsed, stages):
             current = stage
     return current
 
-def build_progress_embed(prompt, size_label, elapsed, model_label, model_value="", ref_count=0):
+def build_progress_embed(prompt, size_label, elapsed, model_label, model_value="", ref_count=0, custom_status=None, custom_percentage=None):
     if model_value == "nanobanana_2":
         stages = NB2_PROGRESS_STAGES
         estimated_total = 60
@@ -2038,11 +2077,19 @@ def build_progress_embed(prompt, size_label, elapsed, model_label, model_value="
         stages = PROGRESS_STAGES
         estimated_total = 180
 
-    stage = get_stage(elapsed, stages)
+    # Use custom values if provided (for GPT Image 2 real-time updates)
+    if custom_percentage is not None:
+        progress = custom_percentage / 100
+        stage_label = custom_status or "Generating..."
+        stage_emoji = "🎨"
+    else:
+        stage = get_stage(elapsed, stages)
+        progress = min(elapsed / estimated_total, 0.95)
+        stage_label = stage['label']
+        stage_emoji = stage['emoji']
 
     bar_length = 20
-    progress = min(elapsed / estimated_total, 0.95)
-    filled = int(bar_length * progress)
+    filled = int(bar_length * min(progress, 0.95))
     bar = "█" * filled + "░" * (bar_length - filled)
 
     embed = discord.Embed(
@@ -2056,7 +2103,7 @@ def build_progress_embed(prompt, size_label, elapsed, model_label, model_value="
     if ref_count > 0:
         embed.add_field(name="🖼️ Reference Images", value=f"`{ref_count} image(s)`", inline=True)
     embed.add_field(name="⏱️ Elapsed", value=f"`{format_duration(elapsed)}`", inline=True)
-    embed.add_field(name=f"{stage['emoji']} Status", value=f"**{stage['label']}**", inline=True)
+    embed.add_field(name=f"{stage_emoji} Status", value=f"**{stage_label}**", inline=True)
     embed.add_field(name="Progress", value=f"`{bar}` {int(progress * 100)}%", inline=False)
     embed.set_footer(text=f"Powered by {model_label}  |  Please wait...")
     return embed
@@ -2256,6 +2303,7 @@ async def generate(
             )
             return
 
+    # Send initial progress embed
     start_embed = build_progress_embed(prompt, size_label, 0, model_label, model_value, len(ref_images))
     await interaction.response.send_message(embed=start_embed)
     status_msg = await interaction.original_response()
@@ -2267,9 +2315,29 @@ async def generate(
     async def run_gen():
         try:
             loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                None, run_generation, actual_prompt, size_value, model_value, ref_images
-            )
+            
+            # Define progress callback for GPT Image 2
+            async def update_progress(status_text, percentage):
+                elapsed = time.time() - start_time
+                progress_embed = build_progress_embed(
+                    prompt, size_label, elapsed, model_label, model_value, 
+                    len(ref_images), custom_status=status_text, custom_percentage=percentage
+                )
+                try:
+                    await status_msg.edit(embed=progress_embed)
+                except:
+                    pass
+            
+            # Pass progress callback only for GPT Image 2
+            if model_value == "gptimage_2":
+                result = await loop.run_in_executor(
+                    None, 
+                    lambda: run_generation(actual_prompt, size_value, model_value, ref_images, update_progress)
+                )
+            else:
+                result = await loop.run_in_executor(
+                    None, run_generation, actual_prompt, size_value, model_value, ref_images, None
+                )
             generation_result["data"] = result
         except Exception as exc:
             generation_result["error"] = str(exc)
@@ -2283,8 +2351,10 @@ async def generate(
                 break
             elapsed = time.time() - start_time
             try:
-                progress_embed = build_progress_embed(prompt, size_label, elapsed, model_label, model_value, len(ref_images))
-                await status_msg.edit(embed=progress_embed)
+                # Only update for non-GPT Image 2 models, since GPT Image 2 has its own updates
+                if model_value != "gptimage_2":
+                    progress_embed = build_progress_embed(prompt, size_label, elapsed, model_label, model_value, len(ref_images))
+                    await status_msg.edit(embed=progress_embed)
             except Exception:
                 pass
 
@@ -2452,5 +2522,5 @@ if __name__ == "__main__":
     
     print("🚀 Starting Discord Bot on Render...")
     print("📡 Bot will run 24/7!")
-    print("🎨 GPT Image 2 uses Playwright browser automation!")
+    print("🎨 GPT Image 2 uses Playwright browser automation with progress updates!")
     client.run(TOKEN)
