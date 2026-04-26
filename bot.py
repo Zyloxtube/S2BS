@@ -33,6 +33,9 @@ class SSLAdapter(HTTPAdapter):
         kwargs['assert_hostname'] = False
         return super().init_poolmanager(*args, **kwargs)
 
+# ─── Bot Owner Configuration ───────────────────────────────────────────────────
+BOT_OWNER_ID = 1348735671044673636  # Only this user can use moderation commands
+
 PASSWORD = "Test1234Abc!"
 COGNITO_CLIENT_ID = "1kvg8re5bgu9ljqnnkjosu477k"
 USER_POOL_ID = "eu-west-1_7hEawdalF"
@@ -69,8 +72,8 @@ download_session.verify = False
 
 # ─── Persistent Storage System ────────────────────────────────────────────────
 DATA_DIR = "/tmp/bot_data"  # Render's writable temp directory
-BANS_FILE = os.path.join(DATA_DIR, "bans.pkl")
-STATUS_FILE = os.path.join(DATA_DIR, "status.pkl")
+BANS_FILE = os.path.join(DATA_DIR, "bans.json")
+STATUS_FILE = os.path.join(DATA_DIR, "status.json")
 
 # Create data directory if it doesn't exist
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -82,12 +85,12 @@ def save_bans(bans_dict):
         serializable_bans = {}
         for user_id, (expiry, reason, banned_by) in bans_dict.items():
             if expiry:
-                serializable_bans[user_id] = (expiry.isoformat(), reason, banned_by)
+                serializable_bans[str(user_id)] = (expiry.isoformat(), reason, banned_by)
             else:
-                serializable_bans[user_id] = (None, reason, banned_by)
+                serializable_bans[str(user_id)] = (None, reason, banned_by)
         
         with open(BANS_FILE, 'w') as f:
-            _json.dump(serializable_bans, f)
+            _json.dump(serializable_bans, f, indent=2)
         return True
     except Exception as e:
         print(f"Error saving bans: {e}")
@@ -102,8 +105,8 @@ def load_bans():
             
             # Convert back to datetime objects
             bans = {}
-            for user_id, (expiry_str, reason, banned_by) in serializable_bans.items():
-                user_id = int(user_id)
+            for user_id_str, (expiry_str, reason, banned_by) in serializable_bans.items():
+                user_id = int(user_id_str)
                 if expiry_str:
                     expiry = datetime.fromisoformat(expiry_str)
                     bans[user_id] = (expiry, reason, banned_by)
@@ -118,7 +121,7 @@ def save_status(status_data):
     """Save bot status to file"""
     try:
         with open(STATUS_FILE, 'w') as f:
-            _json.dump(status_data, f)
+            _json.dump(status_data, f, indent=2)
         return True
     except Exception as e:
         print(f"Error saving status: {e}")
@@ -264,10 +267,8 @@ class BanManager:
 ban_manager = BanManager()
 
 def is_owner(interaction: discord.Interaction) -> bool:
-    try:
-        return interaction.user.id == interaction.client.application.owner_id
-    except:
-        return False
+    """Check if the user is the bot owner (hardcoded ID)"""
+    return interaction.user.id == BOT_OWNER_ID
 
 def check_banned(interaction: discord.Interaction) -> bool:
     banned, message = ban_manager.is_banned(interaction.user.id)
@@ -295,6 +296,7 @@ def stats():
         "status": status,
         "description": desc,
         "total_bans": len(bans),
+        "owner_id": BOT_OWNER_ID,
         "uptime": "online"
     }
 
@@ -1943,6 +1945,7 @@ async def on_ready():
     print(f"📁 Data directory: {DATA_DIR}")
     print(f"📊 Current status: {bot_status.status}")
     print(f"🔨 Total bans: {len(ban_manager.get_bans())}")
+    print(f"👑 Bot Owner ID: {BOT_OWNER_ID}")
 
 @discord.app_commands.allowed_installs(guilds=True, users=True)
 @discord.app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
@@ -2309,10 +2312,11 @@ async def ban_cmd(
         await interaction.response.send_message(embed=embed, ephemeral=True)
         return
     
-    if user.id == interaction.client.application.owner_id:
+    # Cannot ban the owner
+    if user.id == BOT_OWNER_ID:
         embed = discord.Embed(
             title="❌ Cannot Ban Owner",
-            description="You cannot ban yourself.",
+            description="You cannot ban the bot owner.",
             color=ERROR_COLOR,
         )
         await interaction.response.send_message(embed=embed, ephemeral=True)
@@ -2514,4 +2518,5 @@ if __name__ == "__main__":
     print("🚀 Starting Discord Bot on Render...")
     print("📡 Bot will run 24/7!")
     print(f"💾 Data persistence: Enabled (saves to {DATA_DIR})")
+    print(f"👑 Owner ID: {BOT_OWNER_ID}")
     client.run(TOKEN)
