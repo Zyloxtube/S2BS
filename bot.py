@@ -22,6 +22,8 @@ from requests.adapters import HTTPAdapter
 from urllib3.poolmanager import PoolManager
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
+import pickle
+import atexit
 
 # Custom adapter to ignore SSL verification
 class SSLAdapter(HTTPAdapter):
@@ -65,6 +67,73 @@ download_session = requests.Session()
 download_session.mount('https://', SSLAdapter())
 download_session.verify = False
 
+# ─── Persistent Storage System ────────────────────────────────────────────────
+DATA_DIR = "/tmp/bot_data"  # Render's writable temp directory
+BANS_FILE = os.path.join(DATA_DIR, "bans.pkl")
+STATUS_FILE = os.path.join(DATA_DIR, "status.pkl")
+
+# Create data directory if it doesn't exist
+os.makedirs(DATA_DIR, exist_ok=True)
+
+def save_bans(bans_dict):
+    """Save bans to file"""
+    try:
+        # Convert datetime objects to strings for JSON serialization
+        serializable_bans = {}
+        for user_id, (expiry, reason, banned_by) in bans_dict.items():
+            if expiry:
+                serializable_bans[user_id] = (expiry.isoformat(), reason, banned_by)
+            else:
+                serializable_bans[user_id] = (None, reason, banned_by)
+        
+        with open(BANS_FILE, 'w') as f:
+            _json.dump(serializable_bans, f)
+        return True
+    except Exception as e:
+        print(f"Error saving bans: {e}")
+        return False
+
+def load_bans():
+    """Load bans from file"""
+    try:
+        if os.path.exists(BANS_FILE):
+            with open(BANS_FILE, 'r') as f:
+                serializable_bans = _json.load(f)
+            
+            # Convert back to datetime objects
+            bans = {}
+            for user_id, (expiry_str, reason, banned_by) in serializable_bans.items():
+                user_id = int(user_id)
+                if expiry_str:
+                    expiry = datetime.fromisoformat(expiry_str)
+                    bans[user_id] = (expiry, reason, banned_by)
+                else:
+                    bans[user_id] = (None, reason, banned_by)
+            return bans
+    except Exception as e:
+        print(f"Error loading bans: {e}")
+    return {}
+
+def save_status(status_data):
+    """Save bot status to file"""
+    try:
+        with open(STATUS_FILE, 'w') as f:
+            _json.dump(status_data, f)
+        return True
+    except Exception as e:
+        print(f"Error saving status: {e}")
+        return False
+
+def load_status():
+    """Load bot status from file"""
+    try:
+        if os.path.exists(STATUS_FILE):
+            with open(STATUS_FILE, 'r') as f:
+                return _json.load(f)
+    except Exception as e:
+        print(f"Error loading status: {e}")
+    return {"status": "normal", "description": ""}
+
 # ─── Bot Status System ─────────────────────────────────────────────────────────
 class BotStatus:
     NORMAL = "normal"
@@ -72,12 +141,22 @@ class BotStatus:
     BROKEN = "broken"
     
     def __init__(self):
-        self.status = self.NORMAL
-        self.description = ""
+        self.load()
+    
+    def load(self):
+        """Load status from file"""
+        data = load_status()
+        self.status = data.get("status", self.NORMAL)
+        self.description = data.get("description", "")
+    
+    def save(self):
+        """Save status to file"""
+        save_status({"status": self.status, "description": self.description})
     
     def set_status(self, status: str, description: str = ""):
         self.status = status
         self.description = description
+        self.save()
     
     def get_status(self):
         return self.status, self.description
@@ -111,7 +190,19 @@ DURATION_NAMES = {
 
 class BanManager:
     def __init__(self):
-        self.bans: Dict[int, Tuple[datetime, str, str]] = {}  # user_id -> (expiry, reason, banned_by)
+        self.load()
+        # Auto-save on exit
+        atexit.register(self.save)
+    
+    def load(self):
+        """Load bans from file"""
+        self.bans = load_bans()
+        self.clean_expired()
+        self.save()  # Save after cleaning
+    
+    def save(self):
+        """Save bans to file"""
+        save_bans(self.bans)
     
     def ban(self, user_id: int, duration_key: str, reason: str, banned_by: str) -> Tuple[bool, str]:
         if duration_key not in DURATIONS:
@@ -123,11 +214,13 @@ class BanManager:
             expiry = datetime.utcnow() + DURATIONS[duration_key]
         
         self.bans[user_id] = (expiry, reason, banned_by)
+        self.save()
         return True, f"Banned <@{user_id}> for {DURATION_NAMES[duration_key]}" + (f"\nReason: {reason}" if reason else "")
     
     def unban(self, user_id: int) -> bool:
         if user_id in self.bans:
             del self.bans[user_id]
+            self.save()
             return True
         return False
     
@@ -138,6 +231,7 @@ class BanManager:
         expiry, reason, banned_by = self.bans[user_id]
         if expiry and datetime.utcnow() > expiry:
             del self.bans[user_id]
+            self.save()
             return False, None
         
         if expiry:
@@ -164,11 +258,16 @@ class BanManager:
                 to_remove.append(user_id)
         for user_id in to_remove:
             del self.bans[user_id]
+        if to_remove:
+            self.save()
 
 ban_manager = BanManager()
 
 def is_owner(interaction: discord.Interaction) -> bool:
-    return interaction.user.id == interaction.client.application.owner_id
+    try:
+        return interaction.user.id == interaction.client.application.owner_id
+    except:
+        return False
 
 def check_banned(interaction: discord.Interaction) -> bool:
     banned, message = ban_manager.is_banned(interaction.user.id)
@@ -187,11 +286,24 @@ def home():
 def ping():
     return "pong"
 
+@app.route('/stats')
+def stats():
+    """View bot statistics"""
+    bans = ban_manager.get_bans()
+    status, desc = bot_status.get_status()
+    return {
+        "status": status,
+        "description": desc,
+        "total_bans": len(bans),
+        "uptime": "online"
+    }
+
 def run_web():
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
 
 def keep_alive():
     t = Thread(target=run_web)
+    t.daemon = True
     t.start()
 
 # ─── Temp email ──────────────────────────────────────────────────────────────
@@ -1443,10 +1555,24 @@ class MultiGenerationHandler:
                     )
     
     def _build_pending_embed(self):
+        # Check bot status
+        status, status_desc = bot_status.get_status()
+        
+        color = PROGRESS_COLOR
+        title = "🎨 Batch Generation in Progress"
+        
+        if status == BotStatus.BUGGY:
+            color = BUGGY_COLOR
+            title = "⚠️ [BUGGY MODE] " + title
+        
         embed = discord.Embed(
-            title="🎨 Batch Generation in Progress",
-            color=PROGRESS_COLOR,
+            title=title,
+            color=color,
         )
+        
+        if status == BotStatus.BUGGY and status_desc:
+            embed.description = f"**⚠️ NOTE:** {status_desc}"
+        
         embed.add_field(name="📝 Prompt", value=f"```{self.prompt[:200]}```", inline=False)
         embed.add_field(name="📏 Size", value=f"`{self.size_label}`", inline=True)
         embed.add_field(name="🧠 Model", value=f"`{self.model_label}`", inline=True)
@@ -1474,16 +1600,34 @@ class MultiGenerationHandler:
         
         elapsed = time.time() - self.start_time if self.start_time else 0
         embed.add_field(name="⏱️ Elapsed", value=f"`{self._format_duration(elapsed)}`", inline=True)
-        embed.set_footer(text=f"Powered by {self.model_label}  |  Generating {self.amount} item(s)")
+        
+        footer = f"Powered by {self.model_label}  |  Generating {self.amount} item(s)"
+        if status == BotStatus.BUGGY and status_desc:
+            footer = f"⚠️ NOTE: {status_desc[:100]} | {footer}"
+        
+        embed.set_footer(text=footer)
         
         return embed
     
     def _build_success_embed(self, duration):
+        status, status_desc = bot_status.get_status()
+        
+        color = SUCCESS_COLOR
+        title = "✅ Batch Generation Complete!"
+        
+        if status == BotStatus.BUGGY:
+            color = BUGGY_COLOR
+            title = "⚠️ [BUGGY MODE] " + title
+        
         embed = discord.Embed(
-            title="✅ Batch Generation Complete!",
-            color=SUCCESS_COLOR,
+            title=title,
+            color=color,
             timestamp=discord.utils.utcnow(),
         )
+        
+        if status == BotStatus.BUGGY and status_desc:
+            embed.description = f"**⚠️ NOTE:** {status_desc}"
+        
         embed.add_field(name="📝 Prompt", value=f"```{self.prompt[:200]}```", inline=False)
         embed.add_field(name="📏 Size", value=f"`{self.size_label}`", inline=True)
         embed.add_field(name="🧠 Model", value=f"`{self.model_label}`", inline=True)
@@ -1505,20 +1649,42 @@ class MultiGenerationHandler:
         if self.failed:
             embed.add_field(name="⚠️ Failed", value=f"{len(self.failed)} generation(s) failed", inline=True)
         
-        embed.set_footer(text=f"Powered by {self.model_label}")
+        footer = f"Powered by {self.model_label}"
+        if status == BotStatus.BUGGY and status_desc:
+            footer = f"⚠️ NOTE: {status_desc[:100]} | {footer}"
+        
+        embed.set_footer(text=footer)
         return embed
     
     def _build_error_embed(self, error_msg):
+        status, status_desc = bot_status.get_status()
+        
+        color = ERROR_COLOR
+        title = "❌ Batch Generation Failed"
+        
+        if status == BotStatus.BUGGY:
+            color = BUGGY_COLOR
+            title = "⚠️ [BUGGY MODE] " + title
+        
         embed = discord.Embed(
-            title="❌ Batch Generation Failed",
-            color=ERROR_COLOR,
+            title=title,
+            color=color,
             timestamp=discord.utils.utcnow(),
         )
+        
+        if status == BotStatus.BUGGY and status_desc:
+            embed.description = f"**⚠️ NOTE:** {status_desc}"
+        
         embed.add_field(name="📝 Prompt", value=f"```{self.prompt[:200]}```", inline=False)
         embed.add_field(name="📏 Size", value=f"`{self.size_label}`", inline=True)
         embed.add_field(name="🧠 Model", value=f"`{self.model_label}`", inline=True)
         embed.add_field(name="⚠️ Error", value=f"```{error_msg[:500]}```", inline=False)
-        embed.set_footer(text="Please try again later")
+        
+        footer = "Please try again later"
+        if status == BotStatus.BUGGY and status_desc:
+            footer = f"⚠️ NOTE: {status_desc[:100]} | {footer}"
+        
+        embed.set_footer(text=footer)
         return embed
     
     @staticmethod
@@ -1628,6 +1794,10 @@ def build_progress_embed(prompt, size_label, elapsed, model_label, model_value="
         title=title,
         color=color,
     )
+    
+    if status == BotStatus.BUGGY and status_desc:
+        embed.description = f"**⚠️ NOTE:** {status_desc}"
+    
     embed.add_field(name="📝 Prompt", value=f"```{prompt[:200]}```", inline=False)
     if size_label:
         embed.add_field(name="📏 Size", value=f"`{size_label}`", inline=True)
@@ -1770,6 +1940,9 @@ async def on_ready():
     print(f"✅ Bot is online! Logged in as: {client.user}")
     print(f"🚀 Commands available in: Servers and DMs")
     print(f"🌐 Web server running on port {int(os.environ.get('PORT', 8080))}")
+    print(f"📁 Data directory: {DATA_DIR}")
+    print(f"📊 Current status: {bot_status.status}")
+    print(f"🔨 Total bans: {len(ban_manager.get_bans())}")
 
 @discord.app_commands.allowed_installs(guilds=True, users=True)
 @discord.app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
@@ -1795,7 +1968,7 @@ async def generate(
     prompt: str,
     model: app_commands.Choice[str] = None,
     size: app_commands.Choice[str] = None,
-    amount: app_commands.Choice[int] = 1,
+    amount: app_commands.Choice[int] = None,
     ref1: discord.Attachment = None,
     ref2: discord.Attachment = None,
     ref3: discord.Attachment = None,
@@ -2340,4 +2513,5 @@ if __name__ == "__main__":
     # تشغيل البوت
     print("🚀 Starting Discord Bot on Render...")
     print("📡 Bot will run 24/7!")
+    print(f"💾 Data persistence: Enabled (saves to {DATA_DIR})")
     client.run(TOKEN)
