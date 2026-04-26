@@ -23,6 +23,7 @@ from urllib3.poolmanager import PoolManager
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 import atexit
+import concurrent.futures
 
 # Custom adapter to ignore SSL verification
 class SSLAdapter(HTTPAdapter):
@@ -928,7 +929,6 @@ def build_progress_embed(prompt, size_label, elapsed, model_label, model_value="
         embed.add_field(name="📝 Prompt", value=f"```{prompt[:200]}```", inline=False)
         return embed
     
-    # Determine stages and estimated total based on model
     if model_value == "nanobanana_2":
         stages = NB2_PROGRESS_STAGES
         estimated_total = 60
@@ -944,29 +944,24 @@ def build_progress_embed(prompt, size_label, elapsed, model_label, model_value="
 
     stage = get_stage(elapsed, stages)
     
-    # Calculate progress percentage
     if total and total > 1:
-        # Batch mode - progress based on completed items
         progress_percent = completed / total
-        # Override stage for batch mode
         if completed == 0:
-            stage_label = "Starting batch generation"
+            stage_label = "Starting batch generation (ALL videos running in parallel)"
             stage_emoji = "🚀"
         elif completed < total:
-            stage_label = f"Generating item {completed + 1}/{total}"
-            stage_emoji = "🎨"
+            stage_label = f"Generating {completed}/{total} videos completed"
+            stage_emoji = "🎬"
         else:
-            stage_label = "Finalizing"
+            stage_label = "All videos complete!"
             stage_emoji = "✨"
     else:
-        # Single mode - progress based on elapsed time
         progress_percent = min(elapsed / estimated_total, 0.95)
         stage_label = stage["label"]
         stage_emoji = stage["emoji"]
     
     bar = get_progress_bar(progress_percent)
     
-    # Apply status modifications
     color = PROGRESS_COLOR
     title = "🎨  Generating Your Media"
     footer = f"Powered by {model_label}  |  Please wait..."
@@ -992,12 +987,12 @@ def build_progress_embed(prompt, size_label, elapsed, model_label, model_value="
     embed.add_field(name="Progress", value=f"`{bar}` {int(progress_percent * 100)}%", inline=False)
     
     if total and total > 1:
-        embed.add_field(name="📊 Batch Progress", value=f"**{completed}/{total} completed**", inline=False)
+        embed.add_field(name="📊 Batch Progress", value=f"**{completed}/{total} videos completed**\n🎬 Videos are generating in PARALLEL!", inline=False)
     
     embed.set_footer(text=footer)
     return embed
 
-def build_success_embed(prompt, size_label, duration, model_label, model_value="", ref_images=None, results=None, total=None):
+def build_success_embed(prompt, size_label, duration, model_label, model_value="", ref_images=None):
     status, status_desc = bot_status.get_status()
     
     color = SUCCESS_COLOR
@@ -1019,23 +1014,6 @@ def build_success_embed(prompt, size_label, duration, model_label, model_value="
         embed.add_field(name="📏 Size", value=f"`{size_label}`", inline=True)
     embed.add_field(name="🧠 Model", value=f"`{model_label}`", inline=True)
     embed.add_field(name="⏱️ Time Taken", value=f"`{format_duration(duration)}`", inline=True)
-    
-    if total and total > 1 and results:
-        successful = len([r for r in results if r.get("url")])
-        embed.add_field(name="📊 Results", value=f"**{successful}/{total} successful**", inline=True)
-        
-        links_text = ""
-        for idx, result in enumerate(results, 1):
-            url = result.get("download_url") or result.get("url")
-            if url:
-                links_text += f"✅ **#{idx}:** [Click to download]({url})\n"
-            else:
-                links_text += f"❌ **#{idx}:** Failed\n"
-            if len(links_text) > 900:
-                links_text = links_text[:897] + "..."
-                break
-        if links_text:
-            embed.add_field(name="📥 Download Links", value=links_text, inline=False)
     
     if ref_images and len(ref_images) > 0:
         ref_text = ""
@@ -1078,7 +1056,7 @@ def build_error_embed(error_msg, prompt, size_label, model_label, model_value=""
     embed.set_footer(text=footer)
     return embed
 
-# ─── Multi-generation Handler ────────────────────────────────────────────────
+# ─── Multi-generation Handler (PARALLEL - ALL AT ONCE) ────────────────────────
 class MultiGenerationHandler:
     def __init__(self, interaction: discord.Interaction, prompt: str, model_value: str, model_label: str, 
                  size_value: str, size_label: str, amount: int, ref_images: list):
@@ -1090,7 +1068,7 @@ class MultiGenerationHandler:
         self.size_label = size_label
         self.amount = amount
         self.ref_images = ref_images
-        self.results = []
+        self.results = [None] * amount
         self.completed = 0
         self.status_message = None
         self.start_time = None
@@ -1108,24 +1086,14 @@ class MultiGenerationHandler:
         # Start timer update task
         timer_task = asyncio.create_task(self._update_timer())
         
-        # Generate each item
+        # Create all tasks to run in PARALLEL
+        tasks = []
         for i in range(self.amount):
-            try:
-                loop = asyncio.get_event_loop()
-                result = await loop.run_in_executor(
-                    None, run_generation, self.prompt, self.size_value, self.model_value, self.ref_images
-                )
-                self.results.append(result)
-            except Exception as exc:
-                self.results.append({"error": str(exc), "url": None})
-            
-            self.completed += 1
-            
-            # Update embed immediately after completion
-            elapsed = time.time() - self.start_time
-            embed = build_progress_embed(self.prompt, self.size_label, elapsed, self.model_label,
-                                          self.model_value, len(self.ref_images), self.completed, self.amount)
-            await self.status_message.edit(embed=embed)
+            task = asyncio.create_task(self._generate_one(i))
+            tasks.append(task)
+        
+        # Wait for all to complete
+        await asyncio.gather(*tasks)
         
         # Stop timer
         self.generation_done = True
@@ -1135,18 +1103,47 @@ class MultiGenerationHandler:
         except asyncio.CancelledError:
             pass
         
-        # Send final success embed
+        # Send final summary
         total_time = time.time() - self.start_time
-        success_embed = build_success_embed(self.prompt, self.size_label, total_time, self.model_label,
-                                             self.model_value, self.ref_images, self.results, self.amount)
-        await self.status_message.edit(embed=success_embed)
+        successful = len([r for r in self.results if r and r.get("url")])
         
-        successful = len([r for r in self.results if r.get("url")])
-        if successful > 0:
-            await self.interaction.followup.send(
-                f"{self.interaction.user.mention} ✅ Completed **{successful}/{self.amount}** generations! Took **{format_duration(total_time)}**.",
-                ephemeral=True
+        final_embed = discord.Embed(
+            title="✅ Batch Generation Complete!",
+            description=f"**{successful}/{self.amount}** videos generated successfully!\n⏱️ Total time: **{format_duration(total_time)}**",
+            color=SUCCESS_COLOR,
+            timestamp=discord.utils.utcnow()
+        )
+        await self.status_message.edit(embed=final_embed)
+    
+    async def _generate_one(self, index: int):
+        """Generate one video and send link immediately when done"""
+        try:
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None, run_generation, self.prompt, self.size_value, self.model_value, self.ref_images
             )
+            self.results[index] = result
+            
+            # ✅ SEND LINK IMMEDIATELY WHEN THIS VIDEO FINISHES
+            download_url = result.get("download_url") or result.get("url")
+            if download_url:
+                await self.interaction.followup.send(
+                    f"{self.interaction.user.mention} ✅ **Video #{index + 1}/{self.amount} is ready!**\n📥 Download: {download_url}",
+                    ephemeral=False
+                )
+            else:
+                await self.interaction.followup.send(
+                    f"{self.interaction.user.mention} ❌ **Video #{index + 1}/{self.amount} failed!**",
+                    ephemeral=False
+                )
+        except Exception as exc:
+            self.results[index] = {"error": str(exc), "url": None}
+            await self.interaction.followup.send(
+                f"{self.interaction.user.mention} ❌ **Video #{index + 1}/{self.amount} failed!**\nError: {str(exc)[:100]}",
+                ephemeral=False
+            )
+        
+        self.completed += 1
     
     async def _update_timer(self):
         """Update the timer display every 3 seconds"""
@@ -1199,7 +1196,7 @@ async def on_ready():
     prompt="What the media should show",
     model="AI model to use",
     size="Resolution",
-    amount="Number to generate (1-10)",
+    amount="Number to generate (1-10) - ALL GENERATE IN PARALLEL",
     ref1="Reference image 1 (Nano Banana 2 / Wan 2.6 only)",
     ref2="Reference image 2",
     ref3="Reference image 3",
@@ -1293,7 +1290,7 @@ async def generate(
             await interaction.response.send_message("⚠️ Reference images only work with **Nano Banana 2** or **Wan 2.6**.", ephemeral=True)
             return
 
-    # Handle batch generation
+    # Handle batch generation (PARALLEL)
     if amount_value > 1:
         handler = MultiGenerationHandler(interaction, prompt, model_value, model_label,
                                           size_value, size_label, amount_value, ref_images)
@@ -1425,7 +1422,7 @@ async def models_cmd(interaction: discord.Interaction):
                     value="`Nano Banana Pro` — Fast AI image generation\n`Nano Banana 2` — Up to 9 reference images", 
                     inline=False)
     embed.add_field(name="🎬 Video Models", 
-                    value="`Sora 2` — OpenAI Sora v2\n`Veo 3.1` — Google Veo 3.1\n`Veo 3.1 Fast` — Faster version\n`Seedance 2` — Seedance v2\n`Wan 2.6` — With reference images", 
+                    value="`Sora 2` — OpenAI Sora v2\n`Veo 3.1` — Google Veo 3.1\n`Veo 3.1 Fast` — Faster version\n`Seedance 2` — Seedance v2\n`Wan 2.6` — With reference images\n\n**✨ ALL VIDEOS GENERATE IN PARALLEL WHEN USING AMOUNT > 1!**", 
                     inline=False)
     await interaction.response.send_message(embed=embed)
 
@@ -1550,4 +1547,5 @@ if __name__ == "__main__":
     print("📡 Bot will run 24/7!")
     print(f"💾 Data persistence: Enabled (saves to {DATA_DIR})")
     print(f"👑 Owner ID: {BOT_OWNER_ID}")
+    print(f"🎬 ALL VIDEOS GENERATE IN PARALLEL when amount > 1!")
     client.run(TOKEN)
