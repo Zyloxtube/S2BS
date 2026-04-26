@@ -22,7 +22,6 @@ from requests.adapters import HTTPAdapter
 from urllib3.poolmanager import PoolManager
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
-import pickle
 import atexit
 
 # Custom adapter to ignore SSL verification
@@ -81,7 +80,6 @@ os.makedirs(DATA_DIR, exist_ok=True)
 def save_bans(bans_dict):
     """Save bans to file"""
     try:
-        # Convert datetime objects to strings for JSON serialization
         serializable_bans = {}
         for user_id, (expiry, reason, banned_by) in bans_dict.items():
             if expiry:
@@ -103,7 +101,6 @@ def load_bans():
             with open(BANS_FILE, 'r') as f:
                 serializable_bans = _json.load(f)
             
-            # Convert back to datetime objects
             bans = {}
             for user_id_str, (expiry_str, reason, banned_by) in serializable_bans.items():
                 user_id = int(user_id_str)
@@ -194,17 +191,14 @@ DURATION_NAMES = {
 class BanManager:
     def __init__(self):
         self.load()
-        # Auto-save on exit
         atexit.register(self.save)
     
     def load(self):
-        """Load bans from file"""
         self.bans = load_bans()
         self.clean_expired()
-        self.save()  # Save after cleaning
+        self.save()
     
     def save(self):
-        """Save bans to file"""
         save_bans(self.bans)
     
     def ban(self, user_id: int, duration_key: str, reason: str, banned_by: str) -> Tuple[bool, str]:
@@ -267,14 +261,7 @@ class BanManager:
 ban_manager = BanManager()
 
 def is_owner(interaction: discord.Interaction) -> bool:
-    """Check if the user is the bot owner (hardcoded ID)"""
     return interaction.user.id == BOT_OWNER_ID
-
-def check_banned(interaction: discord.Interaction) -> bool:
-    banned, message = ban_manager.is_banned(interaction.user.id)
-    if banned:
-        return True
-    return False
 
 # ─── إعداد خادم الويب (لـ Render) ─────────────────────────────────────────────
 app = Flask(__name__)
@@ -289,7 +276,6 @@ def ping():
 
 @app.route('/stats')
 def stats():
-    """View bot statistics"""
     bans = ban_manager.get_bans()
     status, desc = bot_status.get_status()
     return {
@@ -644,7 +630,7 @@ def run_synthesia_generation(prompt: str, size: str, model: str) -> dict:
         "download_url": result.get("downloadUrl", ""),
     }
 
-# ─── OreateAI image generation (Nano Banana 2) with correct upload method ───
+# ─── OreateAI image generation (Nano Banana 2) ───────────────────────────────
 
 _OREATE_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 
@@ -672,10 +658,8 @@ def _oreate_encrypt_password(plain_text: str, public_key_pem: str) -> str:
     return _base64.b64encode(cipher.encrypt(plain_text.encode())).decode()
 
 def _oreate_upload_image_to_gcs(image_bytes: bytes, filename: str, ext: str, session_cookies: dict) -> dict:
-    """Upload image to GCS using the correct method from oreate_upload.ts"""
     clean_name = re.sub(r"\.[^.]+$", "", filename)
     
-    # Step 1: Get upload token from OreateAI
     token_res = requests.post(
         f"{OREATE_BASE}/oreate/convert/getuploadbostoken",
         headers={
@@ -697,11 +681,9 @@ def _oreate_upload_image_to_gcs(image_bytes: bytes, filename: str, ext: str, ses
     if token_json.get("status", {}).get("code") != 0:
         raise RuntimeError(f"Upload token failed: {token_json.get('status', {}).get('msg')}")
     
-    # Get key data
     key_list = token_json.get("data", {}).get("KeyList", {})
     key_data = key_list.get(f"{clean_name}.{ext}")
     if not key_data and key_list:
-        # Try to get first available key
         key_data = list(key_list.values())[0]
     if not key_data:
         raise RuntimeError(f"No upload token key received. Available: {list(key_list.keys())}")
@@ -711,7 +693,6 @@ def _oreate_upload_image_to_gcs(image_bytes: bytes, filename: str, ext: str, ses
     session_key = key_data["sessionkey"]
     content_type = f"image/{'jpeg' if ext == 'jpg' else ext}"
     
-    # Step 2: Initialize GCS resumable upload
     gcs_init_url = (
         f"https://storage.googleapis.com/upload/storage/v1/b/{bucket}/o"
         f"?uploadType=resumable&name={requests.utils.quote(object_path, safe='')}"
@@ -736,7 +717,6 @@ def _oreate_upload_image_to_gcs(image_bytes: bytes, filename: str, ext: str, ses
     if not upload_url:
         raise RuntimeError("GCS did not return upload URL")
     
-    # Step 3: Upload binary data to GCS
     put_res = requests.put(
         upload_url,
         headers={
@@ -750,7 +730,6 @@ def _oreate_upload_image_to_gcs(image_bytes: bytes, filename: str, ext: str, ses
     if not put_res.ok:
         raise RuntimeError(f"GCS upload failed: {put_res.status_code}")
     
-    # Return attachment object for generation request
     return {
         "bos_url": object_path,
         "doc_title": clean_name,
@@ -763,11 +742,9 @@ def _oreate_upload_image_to_gcs(image_bytes: bytes, filename: str, ext: str, ses
     }
 
 def _oreate_extract_image_url_from_stream(response_text: str) -> str:
-    """Extract image URL from SSE stream response"""
     if not response_text:
         return None
     
-    # Look for imgUrl or url in data events
     lines = response_text.split('\n')
     for line in lines:
         if line.startswith('data: '):
@@ -784,16 +761,12 @@ def _oreate_extract_image_url_from_stream(response_text: str) -> str:
             except (_json.JSONDecodeError, KeyError):
                 pass
     
-    # Fallback: find URL in text
     m = re.search(r"(https?://[^\s\"'<>]+\.(jpg|jpeg|png|gif|webp|bmp)(\?[^\s\"'<>]*)?)", response_text, re.IGNORECASE)
     if m:
         return m.group(1)
     return None
 
 def run_oreate_generation(prompt: str, size: str, ref_images: list) -> dict:
-    """Generate image using Nano Banana 2 with correct upload method"""
-    
-    # Step 1: Get ticket and public key
     ticket_res = requests.get(
         f"{OREATE_BASE}/passport/api/getticket",
         headers={
@@ -812,15 +785,12 @@ def run_oreate_generation(prompt: str, size: str, ref_images: list) -> dict:
     ticket_id = ticket_data["data"]["ticketID"]
     public_key = ticket_data["data"]["pk"]
     
-    # Extract cookies from ticket response
     cookies = ticket_res.cookies.get_dict()
     
-    # Step 2: Generate account credentials
     email = _oreate_generate_email()
     password = _oreate_generate_password()
     encrypted_password = _oreate_encrypt_password(password, public_key)
     
-    # Step 3: Create account
     signup_res = requests.post(
         f"{OREATE_BASE}/passport/api/emailsignupin",
         headers={
@@ -847,24 +817,17 @@ def run_oreate_generation(prompt: str, size: str, ref_images: list) -> dict:
     if signup_data.get("status", {}).get("code") != 0:
         raise RuntimeError(f"OreateAI signup failed: {signup_data.get('status', {}).get('msg')}")
     
-    # Update cookies with session cookies
     session_cookies = signup_res.cookies.get_dict()
     session_cookies.update(cookies)
     
-    # Extract OUID if present
-    ouid = session_cookies.get('OUID', '')
-    
-    # Step 4: Upload reference images
     attachments = []
     for idx, (image_bytes, filename, file_ext) in enumerate(ref_images[:9]):
         try:
             att = _oreate_upload_image_to_gcs(image_bytes, filename, file_ext, session_cookies)
             attachments.append(att)
-            print(f"Uploaded reference image {idx+1}: {att['bos_url']}")
         except Exception as e:
             print(f"Ref {idx+1} upload FAILED: {e}")
     
-    # Step 5: Create chat session
     chat_res = requests.post(
         f"{OREATE_BASE}/oreate/create/chat",
         headers={
@@ -885,7 +848,6 @@ def run_oreate_generation(prompt: str, size: str, ref_images: list) -> dict:
     if not chat_id:
         raise RuntimeError(f"OreateAI: no chatId in response")
     
-    # Step 6: Generate image via SSE stream
     jt_token = "31$eyJrIj4iOCI0Iix5IkciQEdIRExETEtPSEpOUiJJIkFqIjwiNTw9OUE5QT08Pz5CQSI+IjYzIlEiSlFSTlZOVTk5ODY1OiIzIit5IkYiQD9AIj4iOCJQIklHS09KUExQIi0ibSI/Il1Yem52dVYxXTV2M0t2R1grXGZBQDNqTjx6bk5vVDxyclRyY18pPC8tdGpGRkNhWHloM2l0NGNlZDNCd2dIdl1vKXRZQ0VeRWY2L0lcN3pOKTpEUkAtNFA8S0xnRFg1XjY9eTBcWFVxX2dEeHhNbUFqTWNMZU9mV1VRVnFIeXhRYHNyTlQzVUVnSDFsRWxbWlxuaEo7OzlpcExQSXNqVzY8cj49PVAqcmEwQV1JblxgPjVjbFFSLEE2TGV0cGdmR1gzTz8tWXZkUlpKZSlEWUE6WltrajpDQGVQMzZyM3A5bHNdYzxSY29USUlrWmNlb2MwTl5KLk5zVUR4NURnPjc6W3o1TFk/djFyR2o1V3hceilvNy9nUms0c2NRZjQ5djcwOipgL09YWXVFdEtnNDMtNylvT3Zzblc0dnBQV0d4T088Xm5xVFJIaTdcS2BrbkpQW11wLmlfb1VyUTMzbk42XixTQXFiU3k/LF9EW2BgeGwyYTMtbmYzOTVtR290LjxBMC09cWdCW1FJVHhkLT03ODpCZC8xQ2dWTDc1SyxOMi4seEA7UlQxKUlPfCk1X2BjO3MubVBScWJbODh4VWl1L0oscHRdclJXQV90Zmg1WWBJL2tVLjtcfDIyfGZnOmg9QUFDQ3BEQXN3SERNdkd5TXpPU1MuUFUzYzQ5In0="
     
     request_body = {
@@ -933,7 +895,6 @@ def run_oreate_generation(prompt: str, size: str, ref_images: list) -> dict:
     )
     sse_res.raise_for_status()
     
-    # Parse SSE stream
     image_url = None
     full_response = ""
     
@@ -942,13 +903,11 @@ def run_oreate_generation(prompt: str, size: str, ref_images: list) -> dict:
             continue
         full_response += chunk
         
-        # Try to extract image URL from each chunk
         extracted = _oreate_extract_image_url_from_stream(chunk)
         if extracted:
             image_url = extracted
             break
         
-        # Parse JSON from data lines
         lines = chunk.split("\n")
         for line in lines:
             if line.startswith("data: "):
@@ -966,7 +925,6 @@ def run_oreate_generation(prompt: str, size: str, ref_images: list) -> dict:
         if image_url:
             break
     
-    # Final fallback extraction
     if not image_url:
         image_url = _oreate_extract_image_url_from_stream(full_response)
     
@@ -979,20 +937,17 @@ def run_oreate_generation(prompt: str, size: str, ref_images: list) -> dict:
         "is_nanobanana2": True,
     }
 
-# ─── Wan 2.6 Video Generation with Reference Images ─────────────────────────────
+# ─── Wan 2.6 Video Generation ─────────────────────────────────────────────
 
 def _oreate_generate_video_password() -> str:
-    """Generate password for video account"""
     chars = []
     for _ in range(8):
         chars.append(random.choice("0123456789abcdef"))
     return "Aa" + "".join(chars) + "1"
 
 def _oreate_upload_video_reference_image(image_bytes: bytes, filename: str, ext: str, session_cookies: dict) -> dict:
-    """Upload reference image for video generation"""
     clean_name = re.sub(r"\.[^.]+$", "", filename)
     
-    # Step 1: Get upload token from OreateAI
     token_res = requests.post(
         f"{OREATE_BASE}/oreate/convert/getuploadbostoken",
         headers={
@@ -1014,7 +969,6 @@ def _oreate_upload_video_reference_image(image_bytes: bytes, filename: str, ext:
     if token_json.get("status", {}).get("code") != 0:
         raise RuntimeError(f"Upload token failed: {token_json.get('status', {}).get('msg')}")
     
-    # Get key data
     key_list = token_json.get("data", {}).get("KeyList", {})
     key_data = key_list.get(f"{clean_name}.{ext}")
     if not key_data and key_list:
@@ -1027,7 +981,6 @@ def _oreate_upload_video_reference_image(image_bytes: bytes, filename: str, ext:
     session_key = key_data["sessionkey"]
     content_type = f"image/{'jpeg' if ext == 'jpg' else ext}"
     
-    # Step 2: Initialize GCS resumable upload
     gcs_init_url = (
         f"https://storage.googleapis.com/upload/storage/v1/b/{bucket}/o"
         f"?uploadType=resumable&name={requests.utils.quote(object_path, safe='')}"
@@ -1052,7 +1005,6 @@ def _oreate_upload_video_reference_image(image_bytes: bytes, filename: str, ext:
     if not upload_url:
         raise RuntimeError("GCS did not return upload URL")
     
-    # Step 3: Upload binary data to GCS
     put_res = requests.put(
         upload_url,
         headers={
@@ -1066,7 +1018,6 @@ def _oreate_upload_video_reference_image(image_bytes: bytes, filename: str, ext:
     if not put_res.ok:
         raise RuntimeError(f"GCS upload failed: {put_res.status_code}")
     
-    # Return attachment object for generation request
     return {
         "bos_url": object_path,
         "doc_title": clean_name,
@@ -1079,9 +1030,6 @@ def _oreate_upload_video_reference_image(image_bytes: bytes, filename: str, ext:
     }
 
 def run_wan26_generation(prompt: str, size: str, ref_images: list = None) -> dict:
-    """Generate video using Wan 2.6 with reference images support"""
-    
-    # Step 1: Get ticket and public key (for video)
     ticket_res = requests.get(
         f"{OREATE_BASE}/passport/api/getticket",
         headers={
@@ -1100,15 +1048,12 @@ def run_wan26_generation(prompt: str, size: str, ref_images: list = None) -> dic
     ticket_id = ticket_data["data"]["ticketID"]
     public_key = ticket_data["data"]["pk"]
     
-    # Extract cookies from ticket response
     cookies = ticket_res.cookies.get_dict()
     
-    # Step 2: Generate account credentials
     email = _oreate_generate_email()
     password = _oreate_generate_video_password()
     encrypted_password = _oreate_encrypt_password(password, public_key)
     
-    # Step 3: Create account (using GGSEMVIDEO for video)
     signup_res = requests.post(
         f"{OREATE_BASE}/passport/api/emailsignupin",
         headers={
@@ -1135,22 +1080,18 @@ def run_wan26_generation(prompt: str, size: str, ref_images: list = None) -> dic
     if signup_data.get("status", {}).get("code") != 0:
         raise RuntimeError(f"Wan 2.6 signup failed: {signup_data.get('status', {}).get('msg')}")
     
-    # Update cookies with session cookies
     session_cookies = signup_res.cookies.get_dict()
     session_cookies.update(cookies)
     
-    # Step 4: Upload reference images (if any)
     attachments = []
     if ref_images:
         for idx, (image_bytes, filename, file_ext) in enumerate(ref_images[:9]):
             try:
                 att = _oreate_upload_video_reference_image(image_bytes, filename, file_ext, session_cookies)
                 attachments.append(att)
-                print(f"Uploaded reference image {idx+1} for video: {att['bos_url']}")
             except Exception as e:
                 print(f"Ref {idx+1} upload FAILED: {e}")
     
-    # Step 5: Create video chat session
     chat_res = requests.post(
         f"{OREATE_BASE}/oreate/create/chat",
         headers={
@@ -1171,7 +1112,6 @@ def run_wan26_generation(prompt: str, size: str, ref_images: list = None) -> dic
     if not chat_id:
         raise RuntimeError(f"Wan 2.6: no chatId in response")
     
-    # Step 6: Generate video via SSE stream
     jt_token = "31$eyJrIj4iOCI0Iix5IkciQEdIRExETEtPSEpOUiJJIkFqIjwiNTw9OUE5QT08Pz5CQSI+IjYzIlEiSlFSTlZOVTk5ODY1OiIzIit5IkYiQD9AIj4iOCJQIklHS09KUExQIi0ibSI/Il1Yem52dVYxXTV2M0t2R1grXGZBQDNqTjx6bk5vVDxyclRyY18pPC8tdGpGRkNhWHloM2l0NGNlZDNCd2dIdl1vKXRZQ0VeRWY2L0lcN3pOKTpEUkAtNFA8S0xnRFg1XjY9eTBcWFVxX2dEeHhNbUFqTWNMZU9mV1VRVnFIeXhRYHNyTlQzVUVnSDFsRWxbWlxuaEo7OzlpcExQSXNqVzY8cj49PVAqcmEwQV1JblxgPjVjbFFSLEE2TGV0cGdmR1gzTz8tWXZkUlpKZSlEWUE6WltrajpDQGVQMzZyM3A5bHNdYzxSY29USUlrWmNlb2MwTl5KLk5zVUR4NURnPjc6W3o1TFk/djFyR2o1V3hceilvNy9nUms0c2NRZjQ5djcwOipgL09YWXVFdEtnNDMtNylvT3Zzblc0dnBQV0d4T088Xm5xVFJIaTdcS2BrbkpQW11wLmlfb1VyUTMzbk42XixTQXFiU3k/LF9EW2BgeGwyYTMtbmYzOTVtR290LjxBMC09cWdCW1FJVHhkLT03ODpCZC8xQ2dWTDc1SyxOMi4seEA7UlQxKUlPfCk1X2BjO3MubVBScWJbODh4VWl1L0oscHRdclJXQV90Zmg1WWBJL2tVLjtcfDIyfGZnOmg9QUFDQ3BEQXN3SERNdkd5TXpPU1MuUFUzYzQ5In0="
     
     request_body = {
@@ -1219,7 +1159,6 @@ def run_wan26_generation(prompt: str, size: str, ref_images: list = None) -> dic
     )
     sse_res.raise_for_status()
     
-    # Parse SSE stream for video URL
     video_url = None
     full_response = ""
     
@@ -1228,7 +1167,6 @@ def run_wan26_generation(prompt: str, size: str, ref_images: list = None) -> dic
             continue
         full_response += chunk
         
-        # Look for video URLs in the stream
         lines = chunk.split("\n")
         for line in lines:
             if line.startswith("data: "):
@@ -1483,7 +1421,7 @@ def run_generation(prompt: str, size: str, model: str, ref_images: list = None) 
         return run_wan26_generation(prompt, size, ref_images or [])
     return run_synthesia_generation(prompt, size, model)
 
-# ─── Multi-generation Handler ──────────────────────────────────────────────────
+# ─── Multi-generation Handler (FIXED with elapsed time) ──────────────────────
 
 class MultiGenerationHandler:
     def __init__(self, interaction: discord.Interaction, prompt: str, model_value: str, model_label: str, 
@@ -1501,17 +1439,23 @@ class MultiGenerationHandler:
         self.completed = 0
         self.status_message = None
         self.start_time = None
+        self.generation_done = False
+        self.current_item_start = None
     
     async def run(self):
         self.start_time = time.time()
         
         # Initial progress embed
         embed = self._build_pending_embed()
+        await self.interaction.response.send_message(embed=embed)
         self.status_message = await self.interaction.original_response()
-        await self.status_message.edit(embed=embed)
+        
+        # Start timer update task
+        timer_task = asyncio.create_task(self._update_timer())
         
         # Generate each item
         for i in range(self.amount):
+            self.current_item_start = time.time()
             try:
                 loop = asyncio.get_event_loop()
                 result = await loop.run_in_executor(
@@ -1527,34 +1471,37 @@ class MultiGenerationHandler:
             embed = self._build_pending_embed()
             await self.status_message.edit(embed=embed)
         
+        # Stop timer
+        self.generation_done = True
+        timer_task.cancel()
+        try:
+            await timer_task
+        except asyncio.CancelledError:
+            pass
+        
         # Final result
         total_time = time.time() - self.start_time
         
-        if self.completed == 0:
+        if len(self.results) == 0:
             # All failed
             error_embed = self._build_error_embed("All generations failed")
             await self.status_message.edit(embed=error_embed)
-            await self.interaction.followup.send(
-                f"{self.interaction.user.mention} ❌ All {self.amount} generations failed!",
-                ephemeral=True
-            )
         else:
             # Success with some results
             success_embed = self._build_success_embed(total_time)
             await self.status_message.edit(embed=success_embed)
-            await self.interaction.followup.send(
-                f"{self.interaction.user.mention} ✅ Completed **{len(self.results)}/{self.amount}** generations! Took **{self._format_duration(total_time)}**.",
-                ephemeral=True
-            )
-            
-            # Send individual results as separate messages
-            for idx, result in enumerate(self.results, 1):
-                download_url = result.get("download_url") or result.get("url")
-                if download_url:
-                    await self.interaction.followup.send(
-                        f"🎬 **Generation #{idx}**\n📥 Download: {download_url}",
-                        ephemeral=True
-                    )
+    
+    async def _update_timer(self):
+        """Update the timer display every 3 seconds"""
+        while not self.generation_done:
+            await asyncio.sleep(3)
+            if self.generation_done:
+                break
+            try:
+                embed = self._build_pending_embed()
+                await self.status_message.edit(embed=embed)
+            except Exception as e:
+                print(f"Timer update error: {e}")
     
     def _build_pending_embed(self):
         # Check bot status
@@ -1580,6 +1527,24 @@ class MultiGenerationHandler:
         embed.add_field(name="🧠 Model", value=f"`{self.model_label}`", inline=True)
         embed.add_field(name="📊 Progress", value=f"**{self.completed}/{self.amount} completed**", inline=True)
         
+        # Add loading bar
+        bar_length = 15
+        progress_percent = (self.completed / self.amount) if self.amount > 0 else 0
+        filled = int(bar_length * progress_percent)
+        bar = "█" * filled + "░" * (bar_length - filled)
+        embed.add_field(name="📊 Progress Bar", value=f"`{bar}` {int(progress_percent * 100)}%", inline=False)
+        
+        # Add elapsed time
+        elapsed = time.time() - self.start_time if self.start_time else 0
+        embed.add_field(name="⏱️ Elapsed", value=f"`{self._format_duration(elapsed)}`", inline=True)
+        
+        # Add estimated time remaining
+        if self.completed > 0 and self.completed < self.amount:
+            avg_time_per_item = elapsed / self.completed
+            remaining_items = self.amount - self.completed
+            estimated_remaining = avg_time_per_item * remaining_items
+            embed.add_field(name="⏰ Est. Remaining", value=f"`{self._format_duration(estimated_remaining)}`", inline=True)
+        
         # Add completed links
         if self.results:
             links_text = ""
@@ -1589,8 +1554,8 @@ class MultiGenerationHandler:
                     links_text += f"✅ #{idx}: [Link]({url})\n"
                 else:
                     links_text += f"❌ #{idx}: Failed\n"
-                if len(links_text) > 900:
-                    links_text = links_text[:897] + "..."
+                if len(links_text) > 800:
+                    links_text = links_text[:797] + "..."
                     break
             if links_text:
                 embed.add_field(name="✅ Completed", value=links_text, inline=False)
@@ -1599,9 +1564,6 @@ class MultiGenerationHandler:
         pending = self.amount - self.completed
         if pending > 0:
             embed.add_field(name="⏳ Pending", value=f"{pending} generation(s) remaining...", inline=False)
-        
-        elapsed = time.time() - self.start_time if self.start_time else 0
-        embed.add_field(name="⏱️ Elapsed", value=f"`{self._format_duration(elapsed)}`", inline=True)
         
         footer = f"Powered by {self.model_label}  |  Generating {self.amount} item(s)"
         if status == BotStatus.BUGGY and status_desc:
@@ -1650,6 +1612,13 @@ class MultiGenerationHandler:
         
         if self.failed:
             embed.add_field(name="⚠️ Failed", value=f"{len(self.failed)} generation(s) failed", inline=True)
+        
+        # Add reference images if any
+        if self.ref_images and len(self.ref_images) > 0:
+            ref_text = ""
+            for idx, (_, filename, _) in enumerate(self.ref_images[:9], 1):
+                ref_text += f"📷 **Ref {idx}:** `{filename}`\n"
+            embed.add_field(name=f"🖼️ Reference Images ({len(self.ref_images)})", value=ref_text, inline=False)
         
         footer = f"Powered by {self.model_label}"
         if status == BotStatus.BUGGY and status_desc:
@@ -1748,7 +1717,6 @@ def get_stage(elapsed, stages):
     return current
 
 def build_progress_embed(prompt, size_label, elapsed, model_label, model_value="", ref_count=0):
-    # Check bot status for modifications
     status, status_desc = bot_status.get_status()
     
     if status == BotStatus.BROKEN:
@@ -1782,7 +1750,6 @@ def build_progress_embed(prompt, size_label, elapsed, model_label, model_value="
     filled = int(bar_length * progress)
     bar = "█" * filled + "░" * (bar_length - filled)
 
-    # Apply status modifications
     color = PROGRESS_COLOR
     title = "🎨  Generating Your Media"
     footer = f"Powered by {model_label}  |  Please wait..."
@@ -1839,7 +1806,6 @@ def build_success_embed(prompt, size_label, duration, model_label, model_value="
     embed.add_field(name="🧠 Model", value=f"`{model_label}`", inline=True)
     embed.add_field(name="⏱️ Time Taken", value=f"`{format_duration(duration)}`", inline=True)
     
-    # Add reference images section if any
     if ref_images and len(ref_images) > 0:
         ref_text = ""
         for idx, (_, filename, _) in enumerate(ref_images[:9], 1):
@@ -1875,7 +1841,6 @@ def build_error_embed(error_msg, prompt, size_label, model_label, model_value=""
         embed.add_field(name="📏 Size", value=f"`{size_label}`", inline=True)
     embed.add_field(name="🧠 Model", value=f"`{model_label}`", inline=True)
     
-    # Add reference images section if any
     if ref_images and len(ref_images) > 0:
         ref_text = ""
         for idx, (_, filename, _) in enumerate(ref_images[:9], 1):
@@ -2033,7 +1998,6 @@ async def generate(
     actual_prompt = prompt
 
     ref_images = []
-    # Allow reference images for Nano Banana 2 AND Wan 2.6
     if model_value in ["nanobanana_2", "wan_2_6"]:
         raw_refs = [ref1, ref2, ref3, ref4, ref5, ref6, ref7, ref8, ref9]
         bad_refs = []
@@ -2072,9 +2036,6 @@ async def generate(
 
     # Handle multiple generations
     if amount_value > 1:
-        start_embed = build_progress_embed(prompt, size_label, 0, model_label, model_value, len(ref_images))
-        await interaction.response.send_message(embed=start_embed)
-        
         handler = MultiGenerationHandler(
             interaction, actual_prompt, model_value, model_label,
             size_value, size_label, amount_value, ref_images
@@ -2139,19 +2100,15 @@ async def generate(
     download_url = result.get("download_url") or result.get("url")
     if download_url:
         try:
-            # Use the custom session that ignores SSL verification
             response = download_session.get(download_url, timeout=60)
             response.raise_for_status()
             media_bytes = response.content
             
-            # Determine if it's an image or video
             is_image = model_value not in VIDEO_MODELS or model_value == "nanobanana_2"
             ext = "png" if is_image else "mp4"
             filename = f"generated_media.{ext}"
             
-            # For videos, check file size (Discord has 25MB limit for attachments)
             if not is_image and len(media_bytes) > 25 * 1024 * 1024:
-                # Video too large for Discord, just provide download link
                 success_embed.add_field(
                     name="📥 Download",
                     value=f"[Click to download video]({download_url})",
@@ -2189,7 +2146,6 @@ async def generate(
 @discord.app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
 @tree.command(name="ping", description="Check if bot is alive")
 async def ping_cmd(interaction: discord.Interaction):
-    # Check ban
     banned, _ = ban_manager.is_banned(interaction.user.id)
     if banned:
         await interaction.response.send_message("🔒 You are banned from using this bot.", ephemeral=True)
@@ -2312,7 +2268,6 @@ async def ban_cmd(
         await interaction.response.send_message(embed=embed, ephemeral=True)
         return
     
-    # Cannot ban the owner
     if user.id == BOT_OWNER_ID:
         embed = discord.Embed(
             title="❌ Cannot Ban Owner",
@@ -2410,7 +2365,7 @@ async def banlist_cmd(interaction: discord.Interaction):
     for user_id, (expiry, reason, banned_by) in bans.items():
         try:
             user = await client.fetch_user(user_id)
-            user_name = f"{user.name} ({user.display_name})" if hasattr(user, 'display_name') else user.name
+            user_name = f"{user.name}" + (f" ({user.display_name})" if hasattr(user, 'display_name') else "")
         except:
             user_name = f"Unknown User ({user_id})"
         
@@ -2505,16 +2460,13 @@ async def models_cmd(interaction: discord.Interaction):
 # ─── تشغيل البوت ────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    # تشغيل خادم الويب أولاً
     keep_alive()
     
-    # التحقق من وجود التوكن
     TOKEN = os.environ.get("DISCORD_BOT_TOKEN")
     if not TOKEN:
         print("❌ ERROR: DISCORD_BOT_TOKEN environment variable not set!")
         exit(1)
     
-    # تشغيل البوت
     print("🚀 Starting Discord Bot on Render...")
     print("📡 Bot will run 24/7!")
     print(f"💾 Data persistence: Enabled (saves to {DATA_DIR})")
