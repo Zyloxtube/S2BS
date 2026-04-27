@@ -52,6 +52,13 @@ INFO_COLOR = 0x5865F2
 BROKEN_COLOR = 0x800020
 BUGGY_COLOR = 0x9932CC
 
+BROWSER_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+    "Referer": "https://oreateai.com/",
+    "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.9",
+}
+
 intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
@@ -860,45 +867,47 @@ def run_generation(prompt: str, size: str, model: str, ref_images: list = None) 
         return run_wan26_generation(prompt, size, ref_images or [])
     return run_synthesia_generation(prompt, size, model)
 
-# ─── Progress Tracking ──────────────────────────────────────────────────────
+# ─── Helpers ──────────────────────────────────────────────────────────────────
 def format_duration(seconds):
     minutes, secs = divmod(int(seconds), 60)
-    return f"{minutes}m {secs}s" if minutes > 0 else f"{secs}s"
+    if minutes > 0:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
 
 PROGRESS_STAGES = [
-    {"threshold": 0, "label": "Initializing", "emoji": "⚙️"},
-    {"threshold": 5, "label": "Creating account", "emoji": "📧"},
-    {"threshold": 15, "label": "Verifying email", "emoji": "✉️"},
-    {"threshold": 30, "label": "Setting up workspace", "emoji": "🛠️"},
-    {"threshold": 65, "label": "Generating media", "emoji": "🎨"},
-    {"threshold": 120, "label": "Rendering", "emoji": "🎬"},
-    {"threshold": 300, "label": "Finalizing", "emoji": "✨"},
+    {"threshold": 0,   "label": "Initializing",         "emoji": "⚙️"},
+    {"threshold": 5,   "label": "Creating account",     "emoji": "📧"},
+    {"threshold": 15,  "label": "Verifying email",      "emoji": "✉️"},
+    {"threshold": 30,  "label": "Setting up workspace", "emoji": "🛠️"},
+    {"threshold": 65,  "label": "Generating media",     "emoji": "🎨"},
+    {"threshold": 120, "label": "Rendering",            "emoji": "🎬"},
+    {"threshold": 300, "label": "Finalizing",           "emoji": "✨"},
 ]
 
 NB2_PROGRESS_STAGES = [
-    {"threshold": 0, "label": "Initializing", "emoji": "⚙️"},
-    {"threshold": 3, "label": "Creating account", "emoji": "📧"},
+    {"threshold": 0,  "label": "Initializing",     "emoji": "⚙️"},
+    {"threshold": 3,  "label": "Creating account", "emoji": "📧"},
     {"threshold": 10, "label": "Generating image", "emoji": "🎨"},
-    {"threshold": 60, "label": "Finalizing", "emoji": "✨"},
+    {"threshold": 60, "label": "Finalizing",       "emoji": "✨"},
 ]
 
 WAN26_PROGRESS_STAGES = [
-    {"threshold": 0, "label": "Initializing", "emoji": "⚙️"},
-    {"threshold": 5, "label": "Creating account", "emoji": "📧"},
-    {"threshold": 10, "label": "Uploading images", "emoji": "📤"},
-    {"threshold": 20, "label": "Generating video", "emoji": "🎨"},
-    {"threshold": 90, "label": "Rendering", "emoji": "🎬"},
-    {"threshold": 105, "label": "Finalizing", "emoji": "✨"},
+    {"threshold": 0,   "label": "Initializing",       "emoji": "⚙️"},
+    {"threshold": 5,   "label": "Creating account",   "emoji": "📧"},
+    {"threshold": 10,  "label": "Uploading images",   "emoji": "📤"},
+    {"threshold": 20,  "label": "Generating video",   "emoji": "🎨"},
+    {"threshold": 90,  "label": "Rendering",          "emoji": "🎬"},
+    {"threshold": 105, "label": "Finalizing",         "emoji": "✨"},
 ]
 
 SEEDANCE2_PROGRESS_STAGES = [
-    {"threshold": 0, "label": "Initializing", "emoji": "⚙️"},
-    {"threshold": 5, "label": "Creating account", "emoji": "📧"},
-    {"threshold": 15, "label": "Verifying email", "emoji": "✉️"},
-    {"threshold": 30, "label": "Registering user", "emoji": "📝"},
-    {"threshold": 60, "label": "Generating video", "emoji": "🎨"},
-    {"threshold": 300, "label": "Rendering", "emoji": "🎬"},
-    {"threshold": 600, "label": "Finalizing", "emoji": "✨"},
+    {"threshold": 0,   "label": "Initializing",       "emoji": "⚙️"},
+    {"threshold": 5,   "label": "Creating account",   "emoji": "📧"},
+    {"threshold": 15,  "label": "Verifying email",    "emoji": "✉️"},
+    {"threshold": 30,  "label": "Registering user",   "emoji": "📝"},
+    {"threshold": 60,  "label": "Generating video",   "emoji": "🎨"},
+    {"threshold": 300, "label": "Rendering",          "emoji": "🎬"},
+    {"threshold": 600, "label": "Finalizing",         "emoji": "✨"},
 ]
 
 def get_stage(elapsed, stages):
@@ -908,17 +917,18 @@ def get_stage(elapsed, stages):
             current = stage
     return current
 
-def get_progress_bar(progress_percent, length=20):
-    filled = int(length * progress_percent)
-    return "█" * filled + "░" * (length - filled)
-
-def build_progress_embed(prompt, size_label, elapsed, model_label, model_value="", ref_count=0, completed=None, total=None, results=None):
+def build_progress_embed(prompt, size_label, elapsed, model_label, model_value="", ref_count=0):
     status, status_desc = bot_status.get_status()
     
     if status == BotStatus.BROKEN:
-        embed = discord.Embed(title="🔴 Bot is Currently Broken", color=BROKEN_COLOR)
-        embed.description = f"**⚠️ NOTE:** {status_desc if status_desc else 'The bot is currently experiencing issues and cannot generate media.'}"
+        embed = discord.Embed(
+            title="🔴 Bot is Currently Broken",
+            description=f"**⚠️ NOTE:** {status_desc if status_desc else 'The bot is currently experiencing issues and cannot generate media.'}",
+            color=BROKEN_COLOR,
+        )
         embed.add_field(name="📝 Prompt", value=f"```{prompt[:200]}```", inline=False)
+        embed.add_field(name="🧠 Model", value=f"`{model_label}`", inline=True)
+        embed.set_footer(text="Please try again later when the bot is fixed.")
         return embed
     
     if model_value == "nanobanana_2":
@@ -935,25 +945,12 @@ def build_progress_embed(prompt, size_label, elapsed, model_label, model_value="
         estimated_total = 180
 
     stage = get_stage(elapsed, stages)
-    
-    if total and total > 1:
-        progress_percent = completed / total if completed else 0
-        if completed == 0:
-            stage_label = "Starting batch generation (ALL videos in parallel)"
-            stage_emoji = "🚀"
-        elif completed < total:
-            stage_label = f"Generating {completed}/{total} videos completed"
-            stage_emoji = "🎬"
-        else:
-            stage_label = "All videos complete!"
-            stage_emoji = "✨"
-    else:
-        progress_percent = min(elapsed / estimated_total, 0.95)
-        stage_label = stage["label"]
-        stage_emoji = stage["emoji"]
-    
-    bar = get_progress_bar(progress_percent)
-    
+
+    bar_length = 20
+    progress = min(elapsed / estimated_total, 0.95)
+    filled = int(bar_length * progress)
+    bar = "█" * filled + "░" * (bar_length - filled)
+
     color = PROGRESS_COLOR
     title = "🎨  Generating Your Media"
     footer = f"Powered by {model_label}  |  Please wait..."
@@ -963,7 +960,10 @@ def build_progress_embed(prompt, size_label, elapsed, model_label, model_value="
         title = "⚠️ [BUGGY MODE] " + title
         footer = "⚠️ NOTE: Bot is in buggy mode - " + (status_desc if status_desc else "Some features may not work correctly") + " | " + footer
 
-    embed = discord.Embed(title=title, color=color)
+    embed = discord.Embed(
+        title=title,
+        color=color,
+    )
     
     if status == BotStatus.BUGGY and status_desc:
         embed.description = f"**⚠️ NOTE:** {status_desc}"
@@ -975,31 +975,8 @@ def build_progress_embed(prompt, size_label, elapsed, model_label, model_value="
     if ref_count > 0:
         embed.add_field(name="🖼️ Reference Images", value=f"`{ref_count} image(s)`", inline=True)
     embed.add_field(name="⏱️ Elapsed", value=f"`{format_duration(elapsed)}`", inline=True)
-    embed.add_field(name=f"{stage_emoji} Status", value=f"**{stage_label}**", inline=True)
-    embed.add_field(name="Progress", value=f"`{bar}` {int(progress_percent * 100)}%", inline=False)
-    
-    if total and total > 1:
-        embed.add_field(name="📊 Batch Progress", value=f"**{completed}/{total} videos completed**\n🎬 All videos generating in PARALLEL!", inline=False)
-    
-    # Show completed links in the SAME message with OPEN button
-    if results and len(results) > 0:
-        links_text = ""
-        for idx, result in enumerate(results, 1):
-            if result and result.get("url"):
-                url = result.get("download_url") or result.get("url")
-                links_text += f"✅ **Video #{idx}:** [OPEN]({url})\n"
-            elif result and result.get("error"):
-                links_text += f"❌ **Video #{idx}:** Failed - {result.get('error', 'Unknown error')[:50]}\n"
-            else:
-                links_text += f"⏳ **Video #{idx}:** Still generating...\n"
-            
-            if len(links_text) > 1800:
-                links_text = links_text[:1797] + "..."
-                break
-        
-        if links_text:
-            embed.add_field(name="📥 Download Links (Updating Live)", value=links_text[:1024], inline=False)
-    
+    embed.add_field(name=f"{stage['emoji']} Status", value=f"**{stage['label']}**", inline=True)
+    embed.add_field(name="Progress", value=f"`{bar}` {int(progress * 100)}%", inline=False)
     embed.set_footer(text=footer)
     return embed
 
@@ -1015,7 +992,11 @@ def build_success_embed(prompt, size_label, duration, model_label, model_value="
         title = "⚠️ [BUGGY MODE] " + title
         footer = "⚠️ NOTE: Bot is in buggy mode - " + (status_desc if status_desc else "Some features may not work correctly") + " | " + footer
     
-    embed = discord.Embed(title=title, color=color, timestamp=discord.utils.utcnow())
+    embed = discord.Embed(
+        title=title,
+        color=color,
+        timestamp=discord.utils.utcnow(),
+    )
     
     if status == BotStatus.BUGGY and status_desc:
         embed.description = f"**⚠️ NOTE:** {status_desc}"
@@ -1047,7 +1028,11 @@ def build_error_embed(error_msg, prompt, size_label, model_label, model_value=""
         title = "⚠️ [BUGGY MODE] " + title
         footer = "⚠️ NOTE: Bot is in buggy mode - " + (status_desc if status_desc else "Some features may not work correctly") + " | " + footer
     
-    embed = discord.Embed(title=title, color=color, timestamp=discord.utils.utcnow())
+    embed = discord.Embed(
+        title=title,
+        color=color,
+        timestamp=discord.utils.utcnow(),
+    )
     
     if status == BotStatus.BUGGY and status_desc:
         embed.description = f"**⚠️ NOTE:** {status_desc}"
@@ -1067,7 +1052,7 @@ def build_error_embed(error_msg, prompt, size_label, model_label, model_value=""
     embed.set_footer(text=footer)
     return embed
 
-# ─── Multi-generation Handler (ALL LINKS IN SAME MESSAGE WITH ATTACHMENTS) ────
+# ─── Multi-generation Handler (SAME AS ORIGINAL BUT WITH AMOUNT) ────────────────
 class MultiGenerationHandler:
     def __init__(self, interaction: discord.Interaction, prompt: str, model_value: str, model_label: str, 
                  size_value: str, size_label: str, amount: int, ref_images: list):
@@ -1079,27 +1064,21 @@ class MultiGenerationHandler:
         self.size_label = size_label
         self.amount = amount
         self.ref_images = ref_images
-        self.results = [None] * amount
+        self.results = []
+        self.failed = []
         self.completed = 0
         self.status_message = None
         self.start_time = None
-        self.generation_done = False
-        self.lock = asyncio.Lock()
-        self.attachments = []  # Store attachment files
     
     async def run(self):
         self.start_time = time.time()
         
-        # Send initial progress embed
-        embed = build_progress_embed(self.prompt, self.size_label, 0, self.model_label, 
-                                      self.model_value, len(self.ref_images), 0, self.amount, self.results)
-        await self.interaction.response.send_message(embed=embed)
+        # Initial progress embed (original style)
+        start_embed = build_progress_embed(self.prompt, self.size_label, 0, self.model_label, self.model_value, len(self.ref_images))
+        await self.interaction.response.send_message(embed=start_embed)
         self.status_message = await self.interaction.original_response()
         
-        # Start timer update task
-        timer_task = asyncio.create_task(self._update_timer())
-        
-        # Create all tasks to run in PARALLEL
+        # Generate each item in PARALLEL
         tasks = []
         for i in range(self.amount):
             task = asyncio.create_task(self._generate_one(i))
@@ -1108,129 +1087,149 @@ class MultiGenerationHandler:
         # Wait for all to complete
         await asyncio.gather(*tasks)
         
-        # Stop timer
-        self.generation_done = True
-        timer_task.cancel()
-        try:
-            await timer_task
-        except asyncio.CancelledError:
-            pass
-        
-        # Final update with all attachments
+        # Final result
         total_time = time.time() - self.start_time
+        
+        # Calculate success/failure
         successful = len([r for r in self.results if r and r.get("url")])
         
-        final_embed = discord.Embed(
-            title="✅ Batch Generation Complete!",
-            description=f"**{successful}/{self.amount}** videos generated successfully!\n⏱️ Total time: **{format_duration(total_time)}**",
-            color=SUCCESS_COLOR,
-            timestamp=discord.utils.utcnow()
-        )
-        
-        # Add all links to final message with OPEN
-        links_text = ""
-        for idx, result in enumerate(self.results, 1):
-            if result and result.get("url"):
-                url = result.get("download_url") or result.get("url")
-                links_text += f"✅ **Video #{idx}:** [OPEN]({url})\n"
-            elif result and result.get("error"):
-                links_text += f"❌ **Video #{idx}:** Failed\n"
-            else:
-                links_text += f"❌ **Video #{idx}:** Failed\n"
-        
-        if links_text:
-            final_embed.add_field(name="📥 All Download Links", value=links_text[:1024], inline=False)
-        
-        # Send with attachments if any
-        if self.attachments:
-            await self.status_message.edit(embed=final_embed, attachments=self.attachments)
+        if successful == 0:
+            # All failed
+            error_embed = build_error_embed("All generations failed", self.prompt, self.size_label, self.model_label, self.model_value, self.ref_images)
+            await self.status_message.edit(embed=error_embed)
+            await self.interaction.followup.send(
+                f"{self.interaction.user.mention} ❌ All {self.amount} generations failed!",
+                ephemeral=True
+            )
         else:
-            await self.status_message.edit(embed=final_embed)
+            # Success embed (original style)
+            success_embed = build_success_embed(self.prompt, self.size_label, total_time, self.model_label, self.model_value, self.ref_images)
+            
+            # Add batch progress to success embed
+            success_embed.add_field(name="📊 Batch Results", value=f"**{successful}/{self.amount} successful**", inline=False)
+            
+            # Add all links
+            links_text = ""
+            for idx, result in enumerate(self.results, 1):
+                if result and result.get("url"):
+                    url = result.get("download_url") or result.get("url")
+                    links_text += f"✅ **#{idx}:** [OPEN]({url})\n"
+                else:
+                    links_text += f"❌ **#{idx}:** Failed\n"
+            
+            if links_text:
+                success_embed.add_field(name="📥 Download Links", value=links_text[:1024], inline=False)
+            
+            # Add attachments if any videos were downloaded
+            attachments = []
+            for idx, result in enumerate(self.results):
+                if result and result.get("video_bytes"):
+                    try:
+                        filename = f"video_{idx+1}.mp4"
+                        file = discord.File(io.BytesIO(result["video_bytes"]), filename=filename)
+                        attachments.append(file)
+                    except:
+                        pass
+            
+            if attachments:
+                await self.status_message.edit(embed=success_embed, attachments=attachments)
+            else:
+                await self.status_message.edit(embed=success_embed)
+            
+            await self.interaction.followup.send(
+                f"{self.interaction.user.mention} ✅ Completed **{successful}/{self.amount}** generations! Took **{format_duration(total_time)}**.",
+                ephemeral=True
+            )
     
     async def _generate_one(self, index: int):
-        """Generate one video and update the SAME message with its link"""
+        """Generate one video and update progress"""
         try:
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
                 None, run_generation, self.prompt, self.size_value, self.model_value, self.ref_images
             )
             
-            # Download the video to attach it
+            # Try to download the video for attachment
             download_url = result.get("download_url") or result.get("url")
+            video_bytes = None
             if download_url:
                 try:
                     response = download_session.get(download_url, timeout=60)
                     response.raise_for_status()
                     video_bytes = response.content
-                    
-                    # Create Discord file attachment
-                    filename = f"video_{index+1}.mp4"
-                    file = discord.File(io.BytesIO(video_bytes), filename=filename)
-                    
-                    async with self.lock:
-                        self.attachments.append(file)
-                        self.results[index] = result
-                        self.completed += 1
-                except Exception as e:
-                    print(f"Failed to download video {index+1}: {e}")
-                    async with self.lock:
-                        self.results[index] = result
-                        self.completed += 1
-            else:
-                async with self.lock:
-                    self.results[index] = result
-                    self.completed += 1
-                    
+                    result["video_bytes"] = video_bytes
+                except:
+                    pass
+            
+            self.results.append(result)
+            self.completed += 1
+            
         except Exception as exc:
-            async with self.lock:
-                self.results[index] = {"error": str(exc), "url": None}
-                self.completed += 1
+            self.failed.append(str(exc))
+            self.results.append({"error": str(exc), "url": None})
+            self.completed += 1
         
-        # Update the message immediately with the new link
+        # Update progress embed (original style)
         elapsed = time.time() - self.start_time
-        embed = build_progress_embed(self.prompt, self.size_label, elapsed, self.model_label,
-                                      self.model_value, len(self.ref_images), self.completed, self.amount, self.results)
+        progress_embed = build_progress_embed(self.prompt, self.size_label, elapsed, self.model_label, self.model_value, len(self.ref_images))
         
-        # Send with all attachments collected so far
-        if self.attachments:
-            await self.status_message.edit(embed=embed, attachments=self.attachments)
-        else:
-            await self.status_message.edit(embed=embed)
-    
-    async def _update_timer(self):
-        """Update the timer display every 3 seconds"""
-        while not self.generation_done:
-            await asyncio.sleep(3)
-            if self.generation_done:
-                break
-            try:
-                elapsed = time.time() - self.start_time
-                embed = build_progress_embed(self.prompt, self.size_label, elapsed, self.model_label,
-                                              self.model_value, len(self.ref_images), self.completed, self.amount, self.results)
-                
-                if self.attachments:
-                    await self.status_message.edit(embed=embed, attachments=self.attachments)
+        # Add batch progress to the embed
+        progress_embed.add_field(name="📊 Batch Progress", value=f"**{self.completed}/{self.amount} completed**", inline=False)
+        
+        # Add completed links so far
+        if self.results:
+            links_text = ""
+            for idx, result in enumerate(self.results, 1):
+                if result and result.get("url"):
+                    url = result.get("download_url") or result.get("url")
+                    links_text += f"✅ #{idx}: [OPEN]({url})\n"
+                elif result and result.get("error"):
+                    links_text += f"❌ #{idx}: Failed\n"
                 else:
-                    await self.status_message.edit(embed=embed)
-            except Exception as e:
-                print(f"Timer update error: {e}")
+                    links_text += f"⏳ #{idx}: Generating...\n"
+                
+                if len(links_text) > 800:
+                    links_text = links_text[:797] + "..."
+                    break
+            
+            if links_text:
+                progress_embed.add_field(name="✅ Completed/Failed", value=links_text, inline=False)
+        
+        await self.status_message.edit(embed=progress_embed)
 
-# ─── Discord Commands ─────────────────────────────────────────────────────────
-SIZE_LABELS = {"1080x1080": "1:1", "720x1280": "9:16", "1280x720": "16:9", "ai_decide": "AI decided"}
-size_choices = [app_commands.Choice(name="16:9", value="1280x720"), app_commands.Choice(name="9:16", value="720x1280"), app_commands.Choice(name="AI decided", value="ai_decide")]
+# ─── Discord commands ─────────────────────────────────────────────────────────
+SIZE_LABELS = {
+    "1080x1080": "1:1",
+    "720x1280":  "9:16",
+    "1280x720":  "16:9",
+    "ai_decide": "AI decided",
+}
+
+size_choices = [
+    app_commands.Choice(name="16:9",       value="1280x720"),
+    app_commands.Choice(name="9:16",       value="720x1280"),
+    app_commands.Choice(name="AI decided", value="ai_decide"),
+]
+
 NBP_AI_SIZES = ["1080x1080", "1280x720", "720x1280"]
 
 model_choices = [
     app_commands.Choice(name="Nano Banana Pro", value="nanobanana_pro"),
-    app_commands.Choice(name="Nano Banana 2", value="nanobanana_2"),
-    app_commands.Choice(name="Sora 2", value="sora_2"),
-    app_commands.Choice(name="Veo 3.1", value="fal_veo3"),
-    app_commands.Choice(name="Veo 3.1 Fast", value="fal_veo3_fast"),
-    app_commands.Choice(name="Seedance 2", value="seedance_2"),
-    app_commands.Choice(name="Wan 2.6", value="wan_2_6"),
+    app_commands.Choice(name="Nano Banana 2",   value="nanobanana_2"),
+    app_commands.Choice(name="Sora 2",          value="sora_2"),
+    app_commands.Choice(name="Veo 3.1",         value="fal_veo3"),
+    app_commands.Choice(name="Veo 3.1 Fast",    value="fal_veo3_fast"),
+    app_commands.Choice(name="Seedance 2",      value="seedance_2"),
+    app_commands.Choice(name="Wan 2.6",         value="wan_2_6"),
 ]
 
-amount_choices = [app_commands.Choice(name=str(i), value=i) for i in range(1, 11)]
+amount_choices = [
+    app_commands.Choice(name="1", value=1), app_commands.Choice(name="2", value=2),
+    app_commands.Choice(name="3", value=3), app_commands.Choice(name="4", value=4),
+    app_commands.Choice(name="5", value=5), app_commands.Choice(name="6", value=6),
+    app_commands.Choice(name="7", value=7), app_commands.Choice(name="8", value=8),
+    app_commands.Choice(name="9", value=9), app_commands.Choice(name="10", value=10),
+]
 
 MODEL_LABELS = {
     "nanobanana_pro": "Nano Banana Pro", "nanobanana_2": "Nano Banana 2", "sora_2": "Sora 2",
@@ -1240,17 +1239,22 @@ MODEL_LABELS = {
 @client.event
 async def on_ready():
     await tree.sync()
-    print(f"✅ Bot online! Logged in as: {client.user}")
-    print(f"👑 Owner ID: {BOT_OWNER_ID}")
+    print(f"✅ Bot is online! Logged in as: {client.user}")
+    print(f"🚀 Commands available in: Servers and DMs")
+    print(f"🌐 Web server running on port {int(os.environ.get('PORT', 8080))}")
+    print(f"📁 Data directory: {DATA_DIR}")
+    print(f"📊 Current status: {bot_status.status}")
+    print(f"🔨 Total bans: {len(ban_manager.get_bans())}")
+    print(f"👑 Bot Owner ID: {BOT_OWNER_ID}")
 
 @discord.app_commands.allowed_installs(guilds=True, users=True)
 @discord.app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
 @tree.command(name="generate", description="Generate AI media")
 @app_commands.describe(
     prompt="What the media should show",
-    model="AI model to use",
-    size="Resolution",
-    amount="Number to generate (1-10) - ALL GENERATE IN PARALLEL",
+    model="AI model to use (default: Nano Banana Pro)",
+    size="Video resolution",
+    amount="Number of videos to generate (1-10)",
     ref1="Reference image 1 (Nano Banana 2 / Wan 2.6 only)",
     ref2="Reference image 2",
     ref3="Reference image 3",
@@ -1263,46 +1267,59 @@ async def on_ready():
 )
 @app_commands.choices(size=size_choices, model=model_choices, amount=amount_choices)
 async def generate(
-    interaction: discord.Interaction, 
+    interaction: discord.Interaction,
     prompt: str,
-    model: app_commands.Choice[str] = None, 
+    model: app_commands.Choice[str] = None,
     size: app_commands.Choice[str] = None,
     amount: app_commands.Choice[int] = None,
-    ref1: discord.Attachment = None, 
-    ref2: discord.Attachment = None, 
+    ref1: discord.Attachment = None,
+    ref2: discord.Attachment = None,
     ref3: discord.Attachment = None,
-    ref4: discord.Attachment = None, 
-    ref5: discord.Attachment = None, 
+    ref4: discord.Attachment = None,
+    ref5: discord.Attachment = None,
     ref6: discord.Attachment = None,
-    ref7: discord.Attachment = None, 
-    ref8: discord.Attachment = None, 
+    ref7: discord.Attachment = None,
+    ref8: discord.Attachment = None,
     ref9: discord.Attachment = None,
 ):
-    # Check ban
+    # Check if user is banned
     banned, ban_msg = ban_manager.is_banned(interaction.user.id)
     if banned:
-        embed = discord.Embed(title="🔒 You are Banned", description=ban_msg, color=ERROR_COLOR)
+        embed = discord.Embed(
+            title="🔒 You are Banned",
+            description=ban_msg,
+            color=ERROR_COLOR,
+        )
         await interaction.response.send_message(embed=embed, ephemeral=True)
         return
     
     # Check bot status
     status, status_desc = bot_status.get_status()
     if status == BotStatus.BROKEN:
-        embed = discord.Embed(title="🔴 Bot is Currently Broken", color=BROKEN_COLOR)
-        embed.description = f"**⚠️ NOTE:** {status_desc if status_desc else 'The bot is currently experiencing issues.'}"
+        embed = discord.Embed(
+            title="🔴 Bot is Currently Broken",
+            description=f"**⚠️ NOTE:** {status_desc if status_desc else 'The bot is currently experiencing issues and cannot generate media.'}\n\nPlease try again later when the bot is fixed.",
+            color=BROKEN_COLOR,
+        )
         await interaction.response.send_message(embed=embed, ephemeral=True)
         return
     
     amount_value = amount.value if amount else 1
+    
     model_value = model.value if model else "nanobanana_pro"
     model_label = MODEL_LABELS.get(model_value, model_value)
+
     raw_size = size.value if size else None
 
-    # Determine size
     if model_value == "nanobanana_2":
-        size_value, size_label = raw_size or "ai_decide", "AI decided"
-    elif model_value in ["seedance_2", "wan_2_6"]:
-        size_value, size_label = "1280x720", "16:9"
+        size_value = raw_size or "ai_decide"
+        size_label = "AI decided"
+    elif model_value == "seedance_2":
+        size_value = "1280x720"
+        size_label = "16:9"
+    elif model_value == "wan_2_6":
+        size_value = "1280x720"
+        size_label = "16:9"
     elif raw_size == "ai_decide" or raw_size is None:
         if model_value in VIDEO_MODELS:
             size_value = random.choice(["1280x720", "720x1280"])
@@ -1310,48 +1327,58 @@ async def generate(
             size_value = random.choice(NBP_AI_SIZES)
         size_label = "AI decided"
     else:
-        size_value, size_label = raw_size, SIZE_LABELS.get(raw_size, raw_size)
+        size_value = raw_size
+        size_label = SIZE_LABELS.get(size_value, size_value)
 
-    # Handle reference images
+    actual_prompt = prompt
+
     ref_images = []
     if model_value in ["nanobanana_2", "wan_2_6"]:
         raw_refs = [ref1, ref2, ref3, ref4, ref5, ref6, ref7, ref8, ref9]
         bad_refs = []
         for attachment in raw_refs:
-            if not attachment:
+            if attachment is None:
                 continue
-            ext = attachment.filename.split(".")[-1].lower() if "." in attachment.filename else ""
+            fname = attachment.filename
+            ext = fname.rsplit(".", 1)[-1].lower() if "." in fname else ""
             if not ext or f".{ext}" not in VALID_IMAGE_EXTENSIONS:
-                bad_refs.append(attachment.filename)
+                bad_refs.append(fname)
             else:
-                ref_images.append(attachment)
-        
+                ref_images.append((attachment, fname, ext))
+
         if bad_refs:
-            await interaction.response.send_message(f"⚠️ Invalid images: `{'`, `'.join(bad_refs)}`", ephemeral=True)
-            return
-        
-        downloaded = []
-        for attachment in ref_images:
-            try:
-                img_bytes = await attachment.read()
-                ext = attachment.filename.split(".")[-1].lower()
-                downloaded.append((img_bytes, attachment.filename, ext))
-            except Exception as e:
-                print(f"Failed to download: {e}")
-        ref_images = downloaded
-    else:
-        if any([ref1, ref2, ref3, ref4, ref5, ref6, ref7, ref8, ref9]):
-            await interaction.response.send_message("⚠️ Reference images only work with **Nano Banana 2** or **Wan 2.6**.", ephemeral=True)
+            await interaction.response.send_message(
+                f"⚠️ Invalid images: `{'`, `'.join(bad_refs)}`",
+                ephemeral=True,
+            )
             return
 
-    # Handle batch generation (PARALLEL with links in same message)
+        downloaded = []
+        for attachment_obj, fname, ext in ref_images:
+            try:
+                img_bytes = await attachment_obj.read()
+                downloaded.append((img_bytes, fname, ext))
+            except Exception as e:
+                print(f"Failed to download {fname}: {e}")
+        ref_images = downloaded
+    else:
+        if any(r is not None for r in [ref1, ref2, ref3, ref4, ref5, ref6, ref7, ref8, ref9]):
+            await interaction.response.send_message(
+                "⚠️ Reference images only work with **Nano Banana 2** or **Wan 2.6**.",
+                ephemeral=True,
+            )
+            return
+
+    # Handle multiple generations
     if amount_value > 1:
-        handler = MultiGenerationHandler(interaction, prompt, model_value, model_label,
-                                          size_value, size_label, amount_value, ref_images)
+        handler = MultiGenerationHandler(
+            interaction, actual_prompt, model_value, model_label,
+            size_value, size_label, amount_value, ref_images
+        )
         await handler.run()
         return
     
-    # Single generation
+    # Single generation (original flow)
     start_embed = build_progress_embed(prompt, size_label, 0, model_label, model_value, len(ref_images))
     await interaction.response.send_message(embed=start_embed)
     status_msg = await interaction.original_response()
@@ -1363,7 +1390,9 @@ async def generate(
     async def run_gen():
         try:
             loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(None, run_generation, prompt, size_value, model_value, ref_images)
+            result = await loop.run_in_executor(
+                None, run_generation, actual_prompt, size_value, model_value, ref_images
+            )
             generation_result["data"] = result
         except Exception as exc:
             generation_result["error"] = str(exc)
@@ -1384,9 +1413,14 @@ async def generate(
 
     asyncio.create_task(run_gen())
     timer_task = asyncio.create_task(update_timer())
+
     await generation_done.wait()
     timer_task.cancel()
-    
+    try:
+        await timer_task
+    except asyncio.CancelledError:
+        pass
+
     total_time = time.time() - start_time
 
     if generation_result["error"]:
@@ -1404,22 +1438,35 @@ async def generate(
             response = download_session.get(download_url, timeout=60)
             response.raise_for_status()
             media_bytes = response.content
+            
             is_image = model_value not in VIDEO_MODELS or model_value == "nanobanana_2"
             ext = "png" if is_image else "mp4"
             filename = f"generated_media.{ext}"
             
             if not is_image and len(media_bytes) > 25 * 1024 * 1024:
-                success_embed.add_field(name="📥 Download", value=f"[OPEN]({download_url})", inline=False)
+                success_embed.add_field(
+                    name="📥 Download",
+                    value=f"[OPEN]({download_url})",
+                    inline=False,
+                )
             else:
                 media_file = discord.File(io.BytesIO(media_bytes), filename=filename)
                 if is_image:
                     success_embed.set_image(url=f"attachment://{filename}")
                 else:
-                    success_embed.add_field(name="📥 Download", value=f"[OPEN]({download_url})", inline=False)
+                    success_embed.add_field(
+                        name="📥 Download",
+                        value=f"[OPEN]({download_url})",
+                        inline=False,
+                    )
         except Exception as dl_err:
             print(f"Download error: {dl_err}")
             if download_url:
-                success_embed.add_field(name="📥 Download", value=f"[OPEN]({download_url})", inline=False)
+                success_embed.add_field(
+                    name="📥 Download",
+                    value=f"[OPEN]({download_url})",
+                    inline=False,
+                )
 
     if media_file:
         await status_msg.edit(embed=success_embed, attachments=[media_file])
@@ -1427,68 +1474,84 @@ async def generate(
         await status_msg.edit(embed=success_embed)
 
     await interaction.followup.send(
-        f"{interaction.user.mention} Media ready! Took **{format_duration(total_time)}**.",
-        ephemeral=True
+        f"{interaction.user.mention} Media ready! Took **{format_duration(total_time)}**."
     )
 
-# ─── Utility Commands ──────────────────────────────────────────────────────────
+@discord.app_commands.allowed_installs(guilds=True, users=True)
+@discord.app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
 @tree.command(name="ping", description="Check if bot is alive")
 async def ping_cmd(interaction: discord.Interaction):
-    if ban_manager.is_banned(interaction.user.id)[0]:
-        await interaction.response.send_message("🔒 You are banned.", ephemeral=True)
-        return
-    
-    status, status_desc = bot_status.get_status()
-    embed = discord.Embed(title="🏓 Pong!", description=f"Latency: `{round(client.latency * 1000)}ms`", color=SUCCESS_COLOR)
-    
-    if status == BotStatus.BUGGY:
-        embed.color = BUGGY_COLOR
-        embed.title = "⚠️ [BUGGY MODE] " + embed.title
-        embed.description += f"\n\n⚠️ **NOTE:** {status_desc if status_desc else 'Bot is in buggy mode'}"
-    elif status == BotStatus.BROKEN:
-        embed.color = BROKEN_COLOR
-        embed.title = "🔴 [BROKEN MODE] " + embed.title
-        embed.description = f"⚠️ **NOTE:** {status_desc if status_desc else 'Bot is currently broken'}\n\nLatency: `{round(client.latency * 1000)}ms`"
-    
+    embed = discord.Embed(
+        title="🏓 Pong!",
+        description=f"Latency: `{round(client.latency * 1000)}ms`\nStatus: ✅ Online",
+        color=SUCCESS_COLOR,
+    )
     await interaction.response.send_message(embed=embed)
 
+@discord.app_commands.allowed_installs(guilds=True, users=True)
+@discord.app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
 @tree.command(name="sizes", description="View all available media sizes")
 async def sizes_cmd(interaction: discord.Interaction):
-    if ban_manager.is_banned(interaction.user.id)[0]:
-        await interaction.response.send_message("🔒 You are banned.", ephemeral=True)
-        return
-    
-    embed = discord.Embed(title="📏 Available Sizes", color=INFO_COLOR)
-    embed.add_field(name="🌅 Landscape (16:9)", value="`1280x720`", inline=False)
-    embed.add_field(name="📱 Portrait (9:16)", value="`720x1280`", inline=False)
-    embed.add_field(name="⬛ Square (1:1)", value="`1080x1080`", inline=False)
-    embed.add_field(name="🤖 AI Decided", value="Let the AI choose the best size", inline=False)
+    embed = discord.Embed(
+        title="📏  Available Sizes",
+        description="Use these with `/generate` to pick your resolution.",
+        color=INFO_COLOR,
+    )
+    landscape, portrait, square = [], [], []
+    for size in ["1280x720", "720x1280", "1080x1080"]:
+        w, h = map(int, size.split("x"))
+        entry = f"`{size}`"
+        if w == h:
+            square.append(entry)
+        elif w > h:
+            landscape.append(entry)
+        else:
+            portrait.append(entry)
+    if landscape:
+        embed.add_field(name="🌅 Landscape", value="\n".join(landscape), inline=False)
+    if portrait:
+        embed.add_field(name="📱 Portrait", value="\n".join(portrait), inline=False)
+    if square:
+        embed.add_field(name="⬛ Square", value="\n".join(square), inline=False)
     await interaction.response.send_message(embed=embed)
 
+@discord.app_commands.allowed_installs(guilds=True, users=True)
+@discord.app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
 @tree.command(name="models", description="View all available AI models")
 async def models_cmd(interaction: discord.Interaction):
-    if ban_manager.is_banned(interaction.user.id)[0]:
-        await interaction.response.send_message("🔒 You are banned.", ephemeral=True)
-        return
-    
-    embed = discord.Embed(title="🧠 Available Models", color=INFO_COLOR)
-    embed.add_field(name="🖼️ Image Models", 
-                    value="`Nano Banana Pro` — Fast AI image generation\n`Nano Banana 2` — Up to 9 reference images", 
-                    inline=False)
-    embed.add_field(name="🎬 Video Models", 
-                    value="`Sora 2` — OpenAI Sora v2\n`Veo 3.1` — Google Veo 3.1\n`Veo 3.1 Fast` — Faster version\n`Seedance 2` — Seedance v2\n`Wan 2.6` — With reference images\n\n**✨ ALL VIDEOS GENERATE IN PARALLEL!**", 
-                    inline=False)
+    embed = discord.Embed(
+        title="🧠  Available Models",
+        color=INFO_COLOR,
+    )
+    embed.add_field(
+        name="Image models",
+        value=(
+            "`Nano Banana Pro` — fast AI image generation\n"
+            "`Nano Banana 2` — image generation with up to 9 reference images"
+        ),
+        inline=False,
+    )
+    embed.add_field(
+        name="Video models (with audio)",
+        value=(
+            "`Sora 2` — OpenAI Sora v2\n"
+            "`Veo 3.1` — Google Veo 3.1\n"
+            "`Veo 3.1 Fast` — Google Veo 3.1 (faster)\n"
+            "`Seedance 2` — Seedance v2\n"
+            "`Wan 2.6` — Wan 2.6 video generation with reference images"
+        ),
+        inline=False,
+    )
     await interaction.response.send_message(embed=embed)
 
 # ─── Moderation Commands (Owner Only) ────────────────────────────────────────
 status_choices = [
     app_commands.Choice(name="Normal", value="normal"),
     app_commands.Choice(name="Buggy", value="buggy"),
-    app_commands.Choice(name="Broken", value="broken")
+    app_commands.Choice(name="Broken", value="broken"),
 ]
 
 @tree.command(name="status", description="Set bot status (Owner only)")
-@app_commands.describe(mode="Bot operation mode", description="Description/reason for the status change")
 @app_commands.choices(mode=status_choices)
 async def status_cmd(interaction: discord.Interaction, mode: app_commands.Choice[str], description: str = ""):
     if not is_owner(interaction):
@@ -1507,13 +1570,11 @@ async def status_cmd(interaction: discord.Interaction, mode: app_commands.Choice
     embed.add_field(name="Mode", value=f"`{mode.value.upper()}`", inline=True)
     if description:
         embed.add_field(name="Description", value=description, inline=False)
-    
     await interaction.response.send_message(embed=embed)
 
 duration_choices = [app_commands.Choice(name=name, value=value) for value, name in DURATION_NAMES.items()]
 
 @tree.command(name="ban", description="Ban a user from using the bot (Owner only)")
-@app_commands.describe(user="The user to ban", duration="Ban duration", reason="Reason for the ban")
 @app_commands.choices(duration=duration_choices)
 async def ban_cmd(interaction: discord.Interaction, user: discord.User, duration: app_commands.Choice[str], reason: str = ""):
     if not is_owner(interaction):
@@ -1537,7 +1598,6 @@ async def ban_cmd(interaction: discord.Interaction, user: discord.User, duration
         await interaction.response.send_message(f"❌ {msg}", ephemeral=True)
 
 @tree.command(name="unban", description="Unban a user (Owner only)")
-@app_commands.describe(user="The user to unban")
 async def unban_cmd(interaction: discord.Interaction, user: discord.User):
     if not is_owner(interaction):
         await interaction.response.send_message("❌ Only the bot owner can use this command.", ephemeral=True)
@@ -1601,5 +1661,4 @@ if __name__ == "__main__":
     print("📡 Bot will run 24/7!")
     print(f"💾 Data persistence: Enabled (saves to {DATA_DIR})")
     print(f"👑 Owner ID: {BOT_OWNER_ID}")
-    print(f"🎬 ALL VIDEOS GENERATE IN PARALLEL with links appearing in the SAME message!")
     client.run(TOKEN)
