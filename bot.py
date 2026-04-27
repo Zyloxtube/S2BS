@@ -981,13 +981,13 @@ def build_progress_embed(prompt, size_label, elapsed, model_label, model_value="
     if total and total > 1:
         embed.add_field(name="📊 Batch Progress", value=f"**{completed}/{total} videos completed**\n🎬 All videos generating in PARALLEL!", inline=False)
     
-    # Show completed links in the SAME message
+    # Show completed links in the SAME message with OPEN button
     if results and len(results) > 0:
         links_text = ""
         for idx, result in enumerate(results, 1):
             if result and result.get("url"):
                 url = result.get("download_url") or result.get("url")
-                links_text += f"✅ **Video #{idx}:** [Click to download]({url})\n"
+                links_text += f"✅ **Video #{idx}:** [OPEN]({url})\n"
             elif result and result.get("error"):
                 links_text += f"❌ **Video #{idx}:** Failed - {result.get('error', 'Unknown error')[:50]}\n"
             else:
@@ -1067,7 +1067,7 @@ def build_error_embed(error_msg, prompt, size_label, model_label, model_value=""
     embed.set_footer(text=footer)
     return embed
 
-# ─── Multi-generation Handler (ALL LINKS IN SAME MESSAGE) ────────────────────
+# ─── Multi-generation Handler (ALL LINKS IN SAME MESSAGE WITH ATTACHMENTS) ────
 class MultiGenerationHandler:
     def __init__(self, interaction: discord.Interaction, prompt: str, model_value: str, model_label: str, 
                  size_value: str, size_label: str, amount: int, ref_images: list):
@@ -1085,6 +1085,7 @@ class MultiGenerationHandler:
         self.start_time = None
         self.generation_done = False
         self.lock = asyncio.Lock()
+        self.attachments = []  # Store attachment files
     
     async def run(self):
         self.start_time = time.time()
@@ -1115,7 +1116,7 @@ class MultiGenerationHandler:
         except asyncio.CancelledError:
             pass
         
-        # Final update with all links
+        # Final update with all attachments
         total_time = time.time() - self.start_time
         successful = len([r for r in self.results if r and r.get("url")])
         
@@ -1126,12 +1127,12 @@ class MultiGenerationHandler:
             timestamp=discord.utils.utcnow()
         )
         
-        # Add all links to final message
+        # Add all links to final message with OPEN
         links_text = ""
         for idx, result in enumerate(self.results, 1):
             if result and result.get("url"):
                 url = result.get("download_url") or result.get("url")
-                links_text += f"✅ **Video #{idx}:** [Click to download]({url})\n"
+                links_text += f"✅ **Video #{idx}:** [OPEN]({url})\n"
             elif result and result.get("error"):
                 links_text += f"❌ **Video #{idx}:** Failed\n"
             else:
@@ -1140,7 +1141,11 @@ class MultiGenerationHandler:
         if links_text:
             final_embed.add_field(name="📥 All Download Links", value=links_text[:1024], inline=False)
         
-        await self.status_message.edit(embed=final_embed)
+        # Send with attachments if any
+        if self.attachments:
+            await self.status_message.edit(embed=final_embed, attachments=self.attachments)
+        else:
+            await self.status_message.edit(embed=final_embed)
     
     async def _generate_one(self, index: int):
         """Generate one video and update the SAME message with its link"""
@@ -1149,9 +1154,33 @@ class MultiGenerationHandler:
             result = await loop.run_in_executor(
                 None, run_generation, self.prompt, self.size_value, self.model_value, self.ref_images
             )
-            async with self.lock:
-                self.results[index] = result
-                self.completed += 1
+            
+            # Download the video to attach it
+            download_url = result.get("download_url") or result.get("url")
+            if download_url:
+                try:
+                    response = download_session.get(download_url, timeout=60)
+                    response.raise_for_status()
+                    video_bytes = response.content
+                    
+                    # Create Discord file attachment
+                    filename = f"video_{index+1}.mp4"
+                    file = discord.File(io.BytesIO(video_bytes), filename=filename)
+                    
+                    async with self.lock:
+                        self.attachments.append(file)
+                        self.results[index] = result
+                        self.completed += 1
+                except Exception as e:
+                    print(f"Failed to download video {index+1}: {e}")
+                    async with self.lock:
+                        self.results[index] = result
+                        self.completed += 1
+            else:
+                async with self.lock:
+                    self.results[index] = result
+                    self.completed += 1
+                    
         except Exception as exc:
             async with self.lock:
                 self.results[index] = {"error": str(exc), "url": None}
@@ -1161,7 +1190,12 @@ class MultiGenerationHandler:
         elapsed = time.time() - self.start_time
         embed = build_progress_embed(self.prompt, self.size_label, elapsed, self.model_label,
                                       self.model_value, len(self.ref_images), self.completed, self.amount, self.results)
-        await self.status_message.edit(embed=embed)
+        
+        # Send with all attachments collected so far
+        if self.attachments:
+            await self.status_message.edit(embed=embed, attachments=self.attachments)
+        else:
+            await self.status_message.edit(embed=embed)
     
     async def _update_timer(self):
         """Update the timer display every 3 seconds"""
@@ -1173,7 +1207,11 @@ class MultiGenerationHandler:
                 elapsed = time.time() - self.start_time
                 embed = build_progress_embed(self.prompt, self.size_label, elapsed, self.model_label,
                                               self.model_value, len(self.ref_images), self.completed, self.amount, self.results)
-                await self.status_message.edit(embed=embed)
+                
+                if self.attachments:
+                    await self.status_message.edit(embed=embed, attachments=self.attachments)
+                else:
+                    await self.status_message.edit(embed=embed)
             except Exception as e:
                 print(f"Timer update error: {e}")
 
@@ -1371,17 +1409,17 @@ async def generate(
             filename = f"generated_media.{ext}"
             
             if not is_image and len(media_bytes) > 25 * 1024 * 1024:
-                success_embed.add_field(name="📥 Download", value=f"[Click to download video]({download_url})", inline=False)
+                success_embed.add_field(name="📥 Download", value=f"[OPEN]({download_url})", inline=False)
             else:
                 media_file = discord.File(io.BytesIO(media_bytes), filename=filename)
                 if is_image:
                     success_embed.set_image(url=f"attachment://{filename}")
                 else:
-                    success_embed.add_field(name="📥 Download", value=f"[Click to download video]({download_url})", inline=False)
+                    success_embed.add_field(name="📥 Download", value=f"[OPEN]({download_url})", inline=False)
         except Exception as dl_err:
             print(f"Download error: {dl_err}")
             if download_url:
-                success_embed.add_field(name="📥 Download", value=f"[Click to download]({download_url})", inline=False)
+                success_embed.add_field(name="📥 Download", value=f"[OPEN]({download_url})", inline=False)
 
     if media_file:
         await status_msg.edit(embed=success_embed, attachments=[media_file])
