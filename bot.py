@@ -22,6 +22,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.poolmanager import PoolManager
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
+import concurrent.futures
 
 # ─── Bot Owner Configuration ─────────────────────────────────────────────────
 BOT_OWNER_ID = 1348735671044673636  # Your user ID
@@ -1366,8 +1367,8 @@ def get_stage(elapsed, stages):
             current = stage
     return current
 
-def build_progress_embed(prompt, size_label, elapsed, model_label, model_value="", ref_count=0, current_count=0, total_count=0):
-    """Build progress embed - supports multi-generation tracking"""
+def build_progress_embed(prompt, size_label, elapsed, model_label, model_value="", ref_count=0, completed_count=0, total_count=0):
+    """Build progress embed - supports multi-generation tracking with proper elapsed timer"""
     if model_value == "nanobanana_2":
         stages = NB2_PROGRESS_STAGES
         estimated_total = 60
@@ -1402,9 +1403,9 @@ def build_progress_embed(prompt, size_label, elapsed, model_label, model_value="
     embed.add_field(name=f"{stage['emoji']} Status", value=f"**{stage['label']}**", inline=True)
     embed.add_field(name="Progress", value=f"`{bar}` {int(progress * 100)}%", inline=False)
     
-    # Add multi-generation progress if applicable
+    # Add multi-generation progress if applicable (shows completed/total)
     if total_count > 1:
-        embed.add_field(name="📊 Batch Progress", value=f"**{current_count}/{total_count}** videos generated", inline=False)
+        embed.add_field(name="📊 Batch Progress", value=f"**{completed_count}/{total_count}** videos completed", inline=False)
     
     embed.set_footer(text=f"Powered by {model_label}  |  Please wait...")
     
@@ -1414,10 +1415,10 @@ def build_progress_embed(prompt, size_label, elapsed, model_label, model_value="
     
     return embed
 
-def build_success_embed(prompt, size_label, duration, model_label, model_value="", ref_images=None, video_urls: list = None, total_count: int = 1, current_count: int = 1):
+def build_success_embed(prompt, size_label, duration, model_label, model_value="", ref_images=None, video_urls: list = None, total_count: int = 1, completed_count: int = 1):
     """Build success embed - supports multi-generation results"""
     embed = discord.Embed(
-        title="✅  Media Generated Successfully!" if total_count == 1 else f"✅ {current_count}/{total_count} Media Generated!",
+        title="✅  Media Generated Successfully!" if total_count == 1 else f"✅ All {total_count} Videos Generated!",
         color=SUCCESS_COLOR if BotState.get_status() != "buggy" else BUGGY_COLOR,
         timestamp=discord.utils.utcnow(),
     )
@@ -1434,14 +1435,12 @@ def build_success_embed(prompt, size_label, duration, model_label, model_value="
             ref_text += f"📷 **Ref {idx}:** `{filename}`\n"
         embed.add_field(name=f"🖼️ Reference Images ({len(ref_images)})", value=ref_text, inline=False)
     
-    # Add video URLs if this is a multi-generation batch completion
+    # Add video URLs
     if video_urls and len(video_urls) > 0:
         urls_text = ""
         for idx, url in enumerate(video_urls, 1):
             urls_text += f"{idx}. [Video {idx}]({url})\n"
         embed.add_field(name="📥 All Videos", value=urls_text, inline=False)
-    elif video_urls and len(video_urls) == 1:
-        embed.add_field(name="📥 Download", value=f"[Click to download video]({video_urls[0]})", inline=False)
     
     embed.set_footer(text=f"Powered by {model_label}")
     
@@ -1481,51 +1480,73 @@ def build_error_embed(error_msg, prompt, size_label, model_label, model_value=""
     
     return embed
 
-# ─── Multi-generation handler ─────────────────────────────────────────────────
+# ─── Multi-generation handler (CONCURRENT - all at once) ─────────────────────────────────────────────────
 
-async def run_multiple_generations(prompt: str, size_value: str, size_label: str, model_value: str, model_label: str, amount: int, ref_images: list, interaction: discord.Interaction, status_msg: discord.Message):
-    """Run multiple generations with progress tracking"""
+async def run_multiple_generations_concurrent(prompt: str, size_value: str, model_value: str, amount: int, ref_images: list, status_msg: discord.Message, interaction: discord.Interaction):
+    """Run multiple generations CONCURRENTLY (all at once) with progress tracking"""
     total = amount
-    completed = 0
-    failed = 0
-    video_urls = []
-    errors = []
+    completed_count = 0
+    failed_count = 0
+    results = []  # list of (index, url or None, error or None)
+    start_time = time.time()
     
-    # Initial progress embed
-    start_embed = build_progress_embed(prompt, size_label, 0, model_label, model_value, len(ref_images), completed, total)
-    await status_msg.edit(embed=start_embed)
+    # Create a progress tracker that updates periodically
+    last_update_time = time.time()
+    update_interval = 3  # Update progress every 3 seconds
     
-    for i in range(total):
-        # Check if bot is in broken mode
-        if BotState.get_status() == "broken":
-            error_embed = build_error_embed("Bot is currently in BROKEN mode. Generation disabled.", prompt, size_label, model_label, model_value, ref_images)
-            await status_msg.edit(embed=error_embed)
-            return None, 0, 0, [], ["Bot is in broken mode"]
-        
+    # Create tasks for all generations (run concurrently)
+    async def run_one_generation(index: int):
+        nonlocal completed_count, failed_count
         try:
-            # Run generation
+            # Run generation in executor
             loop = asyncio.get_event_loop()
             result = await loop.run_in_executor(
                 None, run_generation, prompt, size_value, model_value, ref_images
             )
-            
             download_url = result.get("download_url") or result.get("url")
             if download_url:
-                video_urls.append(download_url)
-                completed += 1
+                results.append((index, download_url, None))
+                completed_count += 1
             else:
-                failed += 1
-                errors.append(f"Generation {i+1}: No URL returned")
-            
-            # Update progress embed
-            progress_embed = build_progress_embed(prompt, size_label, (i+1) * 30, model_label, model_value, len(ref_images), completed, total)
-            await status_msg.edit(embed=progress_embed)
-            
+                results.append((index, None, "No URL returned"))
+                failed_count += 1
         except Exception as e:
-            failed += 1
-            errors.append(f"Generation {i+1}: {str(e)}")
+            results.append((index, None, str(e)))
+            failed_count += 1
+        
+        return index
     
-    return video_urls, completed, failed, video_urls, errors
+    # Start all tasks concurrently
+    tasks = [run_one_generation(i) for i in range(total)]
+    
+    # Progress update loop
+    async def update_progress():
+        nonlocal last_update_time
+        while not all(task.done() for task in tasks):
+            await asyncio.sleep(update_interval)
+            elapsed = time.time() - start_time
+            try:
+                progress_embed = build_progress_embed(
+                    prompt, size_value, elapsed, MODEL_LABELS.get(model_value, model_value), 
+                    model_value, len(ref_images), completed_count, total
+                )
+                await status_msg.edit(embed=progress_embed)
+            except Exception as e:
+                print(f"Progress update error: {e}")
+    
+    # Run progress updates and wait for all tasks
+    progress_task = asyncio.create_task(update_progress())
+    await asyncio.gather(*tasks)
+    progress_task.cancel()
+    
+    total_time = time.time() - start_time
+    
+    # Sort results by index
+    results.sort(key=lambda x: x[0])
+    video_urls = [url for _, url, _ in results if url is not None]
+    errors = [err for _, _, err in results if err is not None]
+    
+    return video_urls, completed_count, failed_count, results, total_time
 
 # ─── Discord commands ─────────────────────────────────────────────────────────
 
@@ -1726,7 +1747,7 @@ async def generate(
             )
             return
 
-    # Check if amount > 1 and model is video model (or all models support multi generation)
+    # Check if amount > 1 and model is video model
     if amount > 1 and model_value not in VIDEO_MODELS:
         await interaction.response.send_message(
             "⚠️ The `amount` parameter (multi-generation) only works with **video models** (Sora 2, Veo 3.1, Veo 3.1 Fast, Seedance 2, Wan 2.6).",
@@ -1739,12 +1760,11 @@ async def generate(
     await interaction.response.send_message(embed=start_embed)
     status_msg = await interaction.original_response()
 
-    start_time = time.time()
-
     if amount == 1:
-        # Single generation - original behavior
+        # Single generation - original behavior with proper elapsed timer
         generation_done = asyncio.Event()
         generation_result = {"data": None, "error": None}
+        start_time_single = time.time()
 
         async def run_gen():
             try:
@@ -1763,7 +1783,7 @@ async def generate(
                 await asyncio.sleep(3)
                 if generation_done.is_set():
                     break
-                elapsed = time.time() - start_time
+                elapsed = time.time() - start_time_single
                 try:
                     progress_embed = build_progress_embed(prompt, size_label, elapsed, model_label, model_value, len(ref_images), 0, amount)
                     await status_msg.edit(embed=progress_embed)
@@ -1780,7 +1800,7 @@ async def generate(
         except asyncio.CancelledError:
             pass
 
-        total_time = time.time() - start_time
+        total_time = time.time() - start_time_single
 
         if generation_result["error"]:
             error_embed = build_error_embed(generation_result["error"], prompt, size_label, model_label, model_value, ref_images)
@@ -1788,13 +1808,13 @@ async def generate(
             return
 
         result = generation_result["data"]
-        success_embed = build_success_embed(prompt, size_label, total_time, model_label, model_value, ref_images, [result.get("download_url") or result.get("url")], 1, 1)
+        video_url = result.get("download_url") or result.get("url")
+        success_embed = build_success_embed(prompt, size_label, total_time, model_label, model_value, ref_images, [video_url] if video_url else None, 1, 1)
 
         media_file = None
-        download_url = result.get("download_url") or result.get("url")
-        if download_url:
+        if video_url:
             try:
-                response = download_session.get(download_url, timeout=60)
+                response = download_session.get(video_url, timeout=60)
                 response.raise_for_status()
                 media_bytes = response.content
                 
@@ -1805,7 +1825,7 @@ async def generate(
                 if not is_image and len(media_bytes) > 25 * 1024 * 1024:
                     success_embed.add_field(
                         name="📥 Download",
-                        value=f"[Click to download video]({download_url})",
+                        value=f"[Click to download video]({video_url})",
                         inline=False,
                     )
                 else:
@@ -1815,15 +1835,15 @@ async def generate(
                     else:
                         success_embed.add_field(
                             name="📥 Download",
-                            value=f"[Click to download video]({download_url})",
+                            value=f"[Click to download video]({video_url})",
                             inline=False,
                         )
             except Exception as dl_err:
                 print(f"Download error: {dl_err}")
-                if download_url:
+                if video_url:
                     success_embed.add_field(
                         name="📥 Download",
-                        value=f"[Click to download]({download_url})",
+                        value=f"[Click to download]({video_url})",
                         inline=False,
                     )
 
@@ -1836,16 +1856,14 @@ async def generate(
             f"{interaction.user.mention} Media ready! Took **{format_duration(total_time)}**."
         )
     else:
-        # Multi-generation
-        video_urls, completed, failed, successful_urls, errors = await run_multiple_generations(
-            actual_prompt, size_value, size_label, model_value, model_label, amount, ref_images, interaction, status_msg
+        # Multi-generation - CONCURRENT (all at once)
+        video_urls, completed, failed, results, total_time = await run_multiple_generations_concurrent(
+            actual_prompt, size_value, model_value, amount, ref_images, status_msg, interaction
         )
-        
-        total_time = time.time() - start_time
         
         if completed == 0:
             # All failed
-            error_msg = "\n".join(errors[:5]) if errors else "All generations failed"
+            error_msg = "\n".join([err for _, _, err in results if err][:5]) if results else "All generations failed"
             error_embed = build_error_embed(error_msg, prompt, size_label, model_label, model_value, ref_images)
             await status_msg.edit(embed=error_embed)
             await interaction.followup.send(
@@ -1854,7 +1872,7 @@ async def generate(
             )
         else:
             # Some or all succeeded
-            success_embed = build_success_embed(prompt, size_label, total_time, model_label, model_value, ref_images, successful_urls, amount, completed)
+            success_embed = build_success_embed(prompt, size_label, total_time, model_label, model_value, ref_images, video_urls, amount, completed)
             await status_msg.edit(embed=success_embed)
             
             if completed == amount:
@@ -1863,7 +1881,7 @@ async def generate(
                 )
             else:
                 await interaction.followup.send(
-                    f"{interaction.user.mention} ⚠️ **{completed}/{amount}** videos succeeded, **{failed}** failed. Took **{format_duration(total_time)}**.\nErrors: {', '.join(errors[:3])}" + ("..." if len(errors) > 3 else "")
+                    f"{interaction.user.mention} ⚠️ **{completed}/{amount}** videos succeeded, **{failed}** failed. Took **{format_duration(total_time)}**."
                 )
 
 
