@@ -21,66 +21,6 @@ import ssl
 from requests.adapters import HTTPAdapter
 from urllib3.poolmanager import PoolManager
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
-import concurrent.futures
-
-# ─── Bot Owner Configuration ─────────────────────────────────────────────────
-BOT_OWNER_ID = 1348735671044673636  # Your user ID
-
-# ─── Bot State Management ───────────────────────────────────────────────────
-BOT_STATUS = "normal"  # normal, buggy, broken
-STATUS_DESCRIPTION = ""
-BANNED_USERS: Dict[int, dict] = {}  # user_id -> {"until": datetime, "reason": str, "banned_by": int}
-
-class BotState:
-    @staticmethod
-    def is_owner(user_id: int) -> bool:
-        return user_id == BOT_OWNER_ID
-    
-    @staticmethod
-    def is_banned(user_id: int) -> Tuple[bool, Optional[str], Optional[datetime]]:
-        if user_id in BANNED_USERS:
-            ban_info = BANNED_USERS[user_id]
-            if ban_info["until"] is None:  # Permanent ban
-                return True, ban_info["reason"], None
-            if datetime.now() < ban_info["until"]:
-                return True, ban_info["reason"], ban_info["until"]
-            else:
-                # Ban expired, remove it
-                del BANNED_USERS[user_id]
-        return False, None, None
-    
-    @staticmethod
-    def ban_user(user_id: int, target_name: str, duration_minutes: Optional[int], reason: str, banned_by: int):
-        until = datetime.now() + timedelta(minutes=duration_minutes) if duration_minutes else None
-        BANNED_USERS[user_id] = {
-            "until": until,
-            "reason": reason,
-            "banned_by": banned_by,
-            "banned_at": datetime.now(),
-            "name": target_name
-        }
-    
-    @staticmethod
-    def unban_user(user_id: int):
-        if user_id in BANNED_USERS:
-            del BANNED_USERS[user_id]
-            return True
-        return False
-    
-    @staticmethod
-    def get_banned_users() -> dict:
-        return BANNED_USERS.copy()
-    
-    @staticmethod
-    def get_status() -> str:
-        return BOT_STATUS
-    
-    @staticmethod
-    def set_status(status: str, description: str = ""):
-        global BOT_STATUS, STATUS_DESCRIPTION
-        BOT_STATUS = status
-        STATUS_DESCRIPTION = description
 
 # Custom adapter to ignore SSL verification
 class SSLAdapter(HTTPAdapter):
@@ -104,8 +44,8 @@ SUCCESS_COLOR = 0x57F287
 ERROR_COLOR = 0xED4245
 PROGRESS_COLOR = 0xFEE75C
 INFO_COLOR = 0x5865F2
-BUGGY_COLOR = 0x9B59B6  # Purple color for buggy mode
-BROKEN_COLOR = 0xE74C3C  # Red color for broken mode
+BUGGY_COLOR = 0x9B59B6  # Purple for buggy mode
+BROKEN_COLOR = 0xE74C3C  # Red for broken mode
 
 BROWSER_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
@@ -124,7 +64,92 @@ download_session = requests.Session()
 download_session.mount('https://', SSLAdapter())
 download_session.verify = False
 
-# ─── إعداد خادم الويب (لـ Render) ─────────────────────────────────────────────
+# ─── Bot Status System ─────────────────────────────────────────────────────────────
+BOT_STATUS = {
+    "mode": "normal",  # normal, buggy, broken
+    "description": "",
+    "set_by": None,
+    "set_at": None
+}
+
+# ─── Ban System (in-memory for Render) ─────────────────────────────────────────────
+banned_users = {}  # user_id -> {"reason": str, "expires_at": datetime, "banned_at": datetime}
+OWNER_ID = 1348735671044673636
+
+duration_choices = [
+    app_commands.Choice(name="1 minute", value="1m"),
+    app_commands.Choice(name="5 minutes", value="5m"),
+    app_commands.Choice(name="10 minutes", value="10m"),
+    app_commands.Choice(name="20 minutes", value="20m"),
+    app_commands.Choice(name="30 minutes", value="30m"),
+    app_commands.Choice(name="1 hour", value="1h"),
+    app_commands.Choice(name="2 hours", value="2h"),
+    app_commands.Choice(name="3 hours", value="3h"),
+    app_commands.Choice(name="6 hours", value="6h"),
+    app_commands.Choice(name="12 hours", value="12h"),
+    app_commands.Choice(name="1 day", value="1d"),
+    app_commands.Choice(name="2 days", value="2d"),
+    app_commands.Choice(name="3 days", value="3d"),
+    app_commands.Choice(name="4 days", value="4d"),
+    app_commands.Choice(name="5 days", value="5d"),
+    app_commands.Choice(name="6 days", value="6d"),
+    app_commands.Choice(name="1 week", value="1w"),
+    app_commands.Choice(name="2 weeks", value="2w"),
+    app_commands.Choice(name="3 weeks", value="3w"),
+    app_commands.Choice(name="1 month", value="1mo"),
+    app_commands.Choice(name="2 months", value="2mo"),
+    app_commands.Choice(name="3 months", value="3mo"),
+    app_commands.Choice(name="6 months", value="6mo"),
+    app_commands.Choice(name="Permanent", value="perm"),
+]
+
+status_choices = [
+    app_commands.Choice(name="Normal", value="normal"),
+    app_commands.Choice(name="Buggy", value="buggy"),
+    app_commands.Choice(name="Broken", value="broken"),
+]
+
+def is_user_banned(user_id: int) -> tuple:
+    """Check if user is banned. Returns (is_banned, reason_message)"""
+    if user_id == OWNER_ID:
+        return False, None
+    
+    if user_id in banned_users:
+        ban_info = banned_users[user_id]
+        if ban_info["expires_at"] is None:
+            return True, f"You are permanently banned. Reason: {ban_info['reason']}"
+        if datetime.now() < ban_info["expires_at"]:
+            expires_in = ban_info["expires_at"] - datetime.now()
+            return True, f"You are banned for {str(expires_in).split('.')[0]}. Reason: {ban_info['reason']}"
+        else:
+            del banned_users[user_id]
+            return False, None
+    return False, None
+
+def parse_duration(duration_str: str) -> datetime:
+    """Parse duration string and return expiration datetime"""
+    now = datetime.now()
+    
+    if duration_str == "perm":
+        return None
+    
+    value = int(duration_str[:-1])
+    unit = duration_str[-1]
+    
+    if unit == 'm':
+        return now + timedelta(minutes=value)
+    elif unit == 'h':
+        return now + timedelta(hours=value)
+    elif unit == 'd':
+        return now + timedelta(days=value)
+    elif unit == 'w':
+        return now + timedelta(weeks=value)
+    elif unit == 'mo':
+        return now + timedelta(days=value * 30)
+    else:
+        return now + timedelta(hours=1)
+
+# ─── Flask Web Server ─────────────────────────────────────────────────────────────
 app = Flask(__name__)
 
 @app.route('/')
@@ -1367,8 +1392,50 @@ def get_stage(elapsed, stages):
             current = stage
     return current
 
-def build_progress_embed(prompt, size_label, elapsed, model_label, model_value="", ref_count=0, completed_count=0, total_count=0):
-    """Build progress embed - supports multi-generation tracking with proper elapsed timer"""
+def get_status_color():
+    """Return the appropriate color based on bot status"""
+    if BOT_STATUS["mode"] == "buggy":
+        return BUGGY_COLOR
+    elif BOT_STATUS["mode"] == "broken":
+        return BROKEN_COLOR
+    return PROGRESS_COLOR
+
+def get_success_color():
+    if BOT_STATUS["mode"] == "buggy":
+        return BUGGY_COLOR
+    elif BOT_STATUS["mode"] == "broken":
+        return BROKEN_COLOR
+    return SUCCESS_COLOR
+
+def add_status_note(embed, is_error=False):
+    """Add status note to embed if bot is in buggy or broken mode"""
+    if BOT_STATUS["mode"] == "buggy":
+        embed.add_field(
+            name="⚠️ NOTE: Buggy Mode",
+            value=f"**{BOT_STATUS['description']}**" if BOT_STATUS['description'] else "The bot is currently in buggy mode. Some features may not work as expected.",
+            inline=False
+        )
+    elif BOT_STATUS["mode"] == "broken":
+        embed.color = BROKEN_COLOR
+        embed.add_field(
+            name="🔴 NOTE: Bot is Broken",
+            value=f"**{BOT_STATUS['description']}**" if BOT_STATUS['description'] else "The bot is currently broken and cannot generate media. Please try again later.",
+            inline=False
+        )
+    return embed
+
+def build_progress_embed(prompt, size_label, elapsed, model_label, model_value="", ref_count=0, current=1, total=1):
+    if BOT_STATUS["mode"] == "broken":
+        embed = discord.Embed(
+            title="🔴 Bot is Currently Broken",
+            description="The bot is in maintenance mode and cannot generate media right now.",
+            color=BROKEN_COLOR,
+        )
+        if BOT_STATUS["description"]:
+            embed.add_field(name="📝 Details", value=f"```{BOT_STATUS['description']}```", inline=False)
+        embed.set_footer(text="Please try again later or contact the bot owner.")
+        return embed
+    
     if model_value == "nanobanana_2":
         stages = NB2_PROGRESS_STAGES
         estimated_total = 60
@@ -1390,8 +1457,8 @@ def build_progress_embed(prompt, size_label, elapsed, model_label, model_value="
     bar = "█" * filled + "░" * (bar_length - filled)
 
     embed = discord.Embed(
-        title="🎨  Generating Your Media",
-        color=PROGRESS_COLOR if BotState.get_status() != "buggy" else BUGGY_COLOR,
+        title="🎨  Generating Your Media" + (f" ({current}/{total})" if total > 1 else ""),
+        color=get_status_color(),
     )
     embed.add_field(name="📝 Prompt", value=f"```{prompt[:200]}```", inline=False)
     if size_label:
@@ -1402,24 +1469,65 @@ def build_progress_embed(prompt, size_label, elapsed, model_label, model_value="
     embed.add_field(name="⏱️ Elapsed", value=f"`{format_duration(elapsed)}`", inline=True)
     embed.add_field(name=f"{stage['emoji']} Status", value=f"**{stage['label']}**", inline=True)
     embed.add_field(name="Progress", value=f"`{bar}` {int(progress * 100)}%", inline=False)
-    
-    # Add multi-generation progress if applicable (shows completed/total)
-    if total_count > 1:
-        embed.add_field(name="📊 Batch Progress", value=f"**{completed_count}/{total_count}** videos completed", inline=False)
-    
     embed.set_footer(text=f"Powered by {model_label}  |  Please wait...")
     
-    # Add buggy mode note if applicable
-    if BotState.get_status() == "buggy":
-        embed.add_field(name="⚠️ NOTE", value=f"**{STATUS_DESCRIPTION}**", inline=False)
-    
+    embed = add_status_note(embed)
     return embed
 
-def build_success_embed(prompt, size_label, duration, model_label, model_value="", ref_images=None, video_urls: list = None, total_count: int = 1, completed_count: int = 1):
-    """Build success embed - supports multi-generation results"""
+def build_multi_progress_embed(prompt, size_label, model_label, model_value="", ref_count=0, completed=0, total=0, results=None):
+    """Build progress embed for multiple generations in parallel"""
+    if BOT_STATUS["mode"] == "broken":
+        embed = discord.Embed(
+            title="🔴 Bot is Currently Broken",
+            description="The bot is in maintenance mode and cannot generate media right now.",
+            color=BROKEN_COLOR,
+        )
+        if BOT_STATUS["description"]:
+            embed.add_field(name="📝 Details", value=f"```{BOT_STATUS['description']}```", inline=False)
+        embed.set_footer(text="Please try again later or contact the bot owner.")
+        return embed
+    
     embed = discord.Embed(
-        title="✅  Media Generated Successfully!" if total_count == 1 else f"✅ All {total_count} Videos Generated!",
-        color=SUCCESS_COLOR if BotState.get_status() != "buggy" else BUGGY_COLOR,
+        title="🎨  Generating Multiple Media",
+        color=get_status_color(),
+    )
+    embed.add_field(name="📝 Prompt", value=f"```{prompt[:150]}```", inline=False)
+    if size_label:
+        embed.add_field(name="📏 Size", value=f"`{size_label}`", inline=True)
+    embed.add_field(name="🧠 Model", value=f"`{model_label}`", inline=True)
+    if ref_count > 0:
+        embed.add_field(name="🖼️ Reference Images", value=f"`{ref_count} image(s)`", inline=True)
+    
+    # Progress bar for completion
+    bar_length = 20
+    progress = completed / total if total > 0 else 0
+    filled = int(bar_length * progress)
+    bar = "█" * filled + "░" * (bar_length - filled)
+    
+    embed.add_field(name="📊 Overall Progress", value=f"`{bar}` **{completed}/{total} Complete**", inline=False)
+    
+    # List completed results
+    if results and len(results) > 0:
+        results_text = ""
+        for idx, (status, url) in enumerate(results[:5], 1):
+            if status == "completed":
+                results_text += f"✅ **#{idx}:** [Click to view]({url})\n"
+            elif status == "failed":
+                results_text += f"❌ **#{idx}:** Failed\n"
+            elif status == "pending":
+                results_text += f"⏳ **#{idx}:** Generating...\n"
+        if len(results) > 5:
+            results_text += f"\n*... and {len(results) - 5} more*"
+        embed.add_field(name="🎬 Generation Status", value=results_text, inline=False)
+    
+    embed.set_footer(text=f"Powered by {model_label}  |  Generating {total} media in parallel...")
+    embed = add_status_note(embed)
+    return embed
+
+def build_success_embed(prompt, size_label, duration, model_label, model_value="", ref_images=None):
+    embed = discord.Embed(
+        title="✅  Media Generated Successfully!",
+        color=get_success_color(),
         timestamp=discord.utils.utcnow(),
     )
     embed.add_field(name="📝 Prompt", value=f"```{prompt[:200]}```", inline=False)
@@ -1428,33 +1536,59 @@ def build_success_embed(prompt, size_label, duration, model_label, model_value="
     embed.add_field(name="🧠 Model", value=f"`{model_label}`", inline=True)
     embed.add_field(name="⏱️ Time Taken", value=f"`{format_duration(duration)}`", inline=True)
     
-    # Add reference images section if any
     if ref_images and len(ref_images) > 0:
         ref_text = ""
         for idx, (_, filename, _) in enumerate(ref_images[:9], 1):
             ref_text += f"📷 **Ref {idx}:** `{filename}`\n"
         embed.add_field(name=f"🖼️ Reference Images ({len(ref_images)})", value=ref_text, inline=False)
     
-    # Add video URLs
-    if video_urls and len(video_urls) > 0:
-        urls_text = ""
-        for idx, url in enumerate(video_urls, 1):
-            urls_text += f"{idx}. [Video {idx}]({url})\n"
-        embed.add_field(name="📥 All Videos", value=urls_text, inline=False)
+    embed.set_footer(text=f"Powered by {model_label}")
+    embed = add_status_note(embed)
+    return embed
+
+def build_multi_success_embed(prompt, size_label, total_time, model_label, model_value="", ref_images=None, results=None):
+    """Build success embed for multiple generations"""
+    embed = discord.Embed(
+        title="✅  All Media Generated Successfully!",
+        color=get_success_color(),
+        timestamp=discord.utils.utcnow(),
+    )
+    embed.add_field(name="📝 Prompt", value=f"```{prompt[:200]}```", inline=False)
+    if size_label:
+        embed.add_field(name="📏 Size", value=f"`{size_label}`", inline=True)
+    embed.add_field(name="🧠 Model", value=f"`{model_label}`", inline=True)
+    embed.add_field(name="⏱️ Total Time", value=f"`{format_duration(total_time)}`", inline=True)
+    
+    # List all results
+    if results:
+        success_count = sum(1 for r in results if r.get("success"))
+        fail_count = sum(1 for r in results if not r.get("success"))
+        
+        embed.add_field(name="📊 Summary", value=f"✅ Successful: **{success_count}**\n❌ Failed: **{fail_count}**", inline=True)
+        
+        videos_text = ""
+        for idx, result in enumerate(results, 1):
+            if result.get("success") and result.get("url"):
+                videos_text += f"**{idx}.** [Click to view]({result['url']})\n"
+        if videos_text:
+            embed.add_field(name="📥 Generated Media", value=videos_text, inline=False)
+        
+        if fail_count > 0:
+            errors_text = ""
+            for idx, result in enumerate(results, 1):
+                if not result.get("success") and result.get("error"):
+                    errors_text += f"**{idx}.** {result['error'][:100]}\n"
+            if errors_text:
+                embed.add_field(name="⚠️ Errors", value=f"```{errors_text[:500]}```", inline=False)
     
     embed.set_footer(text=f"Powered by {model_label}")
-    
-    # Add buggy mode note if applicable
-    if BotState.get_status() == "buggy":
-        embed.add_field(name="⚠️ NOTE", value=f"**{STATUS_DESCRIPTION}**", inline=False)
-    
+    embed = add_status_note(embed)
     return embed
 
 def build_error_embed(error_msg, prompt, size_label, model_label, model_value="", ref_images=None):
-    """Build error embed"""
     embed = discord.Embed(
         title="❌  Generation Failed",
-        color=ERROR_COLOR if BotState.get_status() != "buggy" else BUGGY_COLOR,
+        color=ERROR_COLOR,
         timestamp=discord.utils.utcnow(),
     )
     embed.add_field(name="📝 Prompt", value=f"```{prompt[:200]}```", inline=False)
@@ -1462,7 +1596,6 @@ def build_error_embed(error_msg, prompt, size_label, model_label, model_value=""
         embed.add_field(name="📏 Size", value=f"`{size_label}`", inline=True)
     embed.add_field(name="🧠 Model", value=f"`{model_label}`", inline=True)
     
-    # Add reference images section if any
     if ref_images and len(ref_images) > 0:
         ref_text = ""
         for idx, (_, filename, _) in enumerate(ref_images[:9], 1):
@@ -1471,82 +1604,8 @@ def build_error_embed(error_msg, prompt, size_label, model_label, model_value=""
     
     embed.add_field(name="⚠️ Error", value=f"```{str(error_msg)[:500]}```", inline=False)
     embed.set_footer(text="Please try again later")
-    
-    # Add buggy/broken mode note if applicable
-    if BotState.get_status() == "buggy":
-        embed.add_field(name="⚠️ NOTE", value=f"**{STATUS_DESCRIPTION}**", inline=False)
-    elif BotState.get_status() == "broken":
-        embed.add_field(name="🔴 BOT STATUS: BROKEN", value=f"**{STATUS_DESCRIPTION}**\n\nBot is currently non-functional. Please wait for the owner to fix it.", inline=False)
-    
+    embed = add_status_note(embed, is_error=True)
     return embed
-
-# ─── Multi-generation handler (CONCURRENT - all at once) ─────────────────────────────────────────────────
-
-async def run_multiple_generations_concurrent(prompt: str, size_value: str, model_value: str, amount: int, ref_images: list, status_msg: discord.Message, interaction: discord.Interaction):
-    """Run multiple generations CONCURRENTLY (all at once) with progress tracking"""
-    total = amount
-    completed_count = 0
-    failed_count = 0
-    results = []  # list of (index, url or None, error or None)
-    start_time = time.time()
-    
-    # Create a progress tracker that updates periodically
-    last_update_time = time.time()
-    update_interval = 3  # Update progress every 3 seconds
-    
-    # Create tasks for all generations (run concurrently)
-    async def run_one_generation(index: int):
-        nonlocal completed_count, failed_count
-        try:
-            # Run generation in executor
-            loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                None, run_generation, prompt, size_value, model_value, ref_images
-            )
-            download_url = result.get("download_url") or result.get("url")
-            if download_url:
-                results.append((index, download_url, None))
-                completed_count += 1
-            else:
-                results.append((index, None, "No URL returned"))
-                failed_count += 1
-        except Exception as e:
-            results.append((index, None, str(e)))
-            failed_count += 1
-        
-        return index
-    
-    # Start all tasks concurrently
-    tasks = [run_one_generation(i) for i in range(total)]
-    
-    # Progress update loop
-    async def update_progress():
-        nonlocal last_update_time
-        while not all(task.done() for task in tasks):
-            await asyncio.sleep(update_interval)
-            elapsed = time.time() - start_time
-            try:
-                progress_embed = build_progress_embed(
-                    prompt, size_value, elapsed, MODEL_LABELS.get(model_value, model_value), 
-                    model_value, len(ref_images), completed_count, total
-                )
-                await status_msg.edit(embed=progress_embed)
-            except Exception as e:
-                print(f"Progress update error: {e}")
-    
-    # Run progress updates and wait for all tasks
-    progress_task = asyncio.create_task(update_progress())
-    await asyncio.gather(*tasks)
-    progress_task.cancel()
-    
-    total_time = time.time() - start_time
-    
-    # Sort results by index
-    results.sort(key=lambda x: x[0])
-    video_urls = [url for _, url, _ in results if url is not None]
-    errors = [err for _, _, err in results if err is not None]
-    
-    return video_urls, completed_count, failed_count, results, total_time
 
 # ─── Discord commands ─────────────────────────────────────────────────────────
 
@@ -1554,12 +1613,11 @@ SIZE_LABELS = {
     "1080x1080": "1:1",
     "720x1280":  "9:16",
     "1280x720":  "16:9",
-    "ai_decide": "AI decided",
 }
 
 size_choices = [
-    app_commands.Choice(name="16:9",       value="1280x720"),
-    app_commands.Choice(name="9:16",       value="720x1280"),
+    app_commands.Choice(name="16:9",     value="1280x720"),
+    app_commands.Choice(name="9:16",     value="720x1280"),
     app_commands.Choice(name="AI decided", value="ai_decide"),
 ]
 
@@ -1585,48 +1643,13 @@ MODEL_LABELS = {
     "wan_2_6":        "Wan 2.6",
 }
 
-# Duration choices for ban command
-duration_choices = [
-    app_commands.Choice(name="1 minute", value=1),
-    app_commands.Choice(name="5 minutes", value=5),
-    app_commands.Choice(name="10 minutes", value=10),
-    app_commands.Choice(name="20 minutes", value=20),
-    app_commands.Choice(name="30 minutes", value=30),
-    app_commands.Choice(name="1 hour", value=60),
-    app_commands.Choice(name="2 hours", value=120),
-    app_commands.Choice(name="3 hours", value=180),
-    app_commands.Choice(name="6 hours", value=360),
-    app_commands.Choice(name="12 hours", value=720),
-    app_commands.Choice(name="1 day", value=1440),
-    app_commands.Choice(name="2 days", value=2880),
-    app_commands.Choice(name="3 days", value=4320),
-    app_commands.Choice(name="4 days", value=5760),
-    app_commands.Choice(name="5 days", value=7200),
-    app_commands.Choice(name="6 days", value=8640),
-    app_commands.Choice(name="1 week", value=10080),
-    app_commands.Choice(name="2 weeks", value=20160),
-    app_commands.Choice(name="3 weeks", value=30240),
-    app_commands.Choice(name="1 month", value=43200),
-    app_commands.Choice(name="2 months", value=86400),
-    app_commands.Choice(name="3 months", value=129600),
-    app_commands.Choice(name="6 months", value=259200),
-    app_commands.Choice(name="Permanent", value=-1),
-]
-
-# Status choices
-status_choices = [
-    app_commands.Choice(name="Normal", value="normal"),
-    app_commands.Choice(name="Buggy", value="buggy"),
-    app_commands.Choice(name="Broken", value="broken"),
-]
-
 @client.event
 async def on_ready():
     await tree.sync()
     print(f"✅ Bot is online! Logged in as: {client.user}")
     print(f"🚀 Commands available in: Servers and DMs")
     print(f"🌐 Web server running on port {int(os.environ.get('PORT', 8080))}")
-    print(f"👑 Owner ID: {BOT_OWNER_ID}")
+    print(f"👑 Owner ID: {OWNER_ID}")
 
 @discord.app_commands.allowed_installs(guilds=True, users=True)
 @discord.app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
@@ -1635,7 +1658,7 @@ async def on_ready():
     prompt="What the media should show",
     model="AI model to use (default: Nano Banana Pro)",
     size="Video resolution",
-    amount="Number of videos to generate (1-10, default: 1)",
+    amount="Number of media to generate (1-10, default: 1)",
     ref1="Reference image 1 (Nano Banana 2 / Wan 2.6 only)",
     ref2="Reference image 2",
     ref3="Reference image 3",
@@ -1652,7 +1675,7 @@ async def generate(
     prompt: str,
     model: app_commands.Choice[str] = None,
     size: app_commands.Choice[str] = None,
-    amount: app_commands.Range[int, 1, 10] = 1,
+    amount: int = 1,
     ref1: discord.Attachment = None,
     ref2: discord.Attachment = None,
     ref3: discord.Attachment = None,
@@ -1664,24 +1687,31 @@ async def generate(
     ref9: discord.Attachment = None,
 ):
     # Check if user is banned
-    is_banned, ban_reason, ban_until = BotState.is_banned(interaction.user.id)
+    is_banned, ban_message = is_user_banned(interaction.user.id)
     if is_banned:
-        if ban_until:
-            ban_msg = f"You are banned until {ban_until.strftime('%Y-%m-%d %H:%M:%S UTC')}. Reason: {ban_reason}"
-        else:
-            ban_msg = f"You are permanently banned. Reason: {ban_reason}"
-        await interaction.response.send_message(f"❌ {ban_msg}", ephemeral=True)
+        embed = discord.Embed(
+            title="🔒 Access Denied",
+            description=ban_message,
+            color=ERROR_COLOR,
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
         return
     
     # Check if bot is in broken mode
-    if BotState.get_status() == "broken":
-        error_embed = discord.Embed(
-            title="🔴 Bot Currently Unavailable",
-            description=f"**{STATUS_DESCRIPTION}**\n\nThe bot is currently in BROKEN mode and cannot generate content. Please try again later.",
+    if BOT_STATUS["mode"] == "broken" and interaction.user.id != OWNER_ID:
+        embed = discord.Embed(
+            title="🔴 Bot is Currently Broken",
+            description="The bot is in maintenance mode and cannot generate media right now.",
             color=BROKEN_COLOR,
         )
-        await interaction.response.send_message(embed=error_embed, ephemeral=True)
+        if BOT_STATUS["description"]:
+            embed.add_field(name="📝 Details", value=f"```{BOT_STATUS['description']}```", inline=False)
+        embed.set_footer(text="Please try again later or contact the bot owner.")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
         return
+    
+    # Validate amount
+    amount = max(1, min(10, amount))
     
     model_value = model.value if model else "nanobanana_pro"
     model_label = MODEL_LABELS.get(model_value, model_value)
@@ -1747,24 +1777,15 @@ async def generate(
             )
             return
 
-    # Check if amount > 1 and model is video model
-    if amount > 1 and model_value not in VIDEO_MODELS:
-        await interaction.response.send_message(
-            "⚠️ The `amount` parameter (multi-generation) only works with **video models** (Sora 2, Veo 3.1, Veo 3.1 Fast, Seedance 2, Wan 2.6).",
-            ephemeral=True,
-        )
-        return
-
-    # Send initial embed
-    start_embed = build_progress_embed(prompt, size_label, 0, model_label, model_value, len(ref_images), 0, amount)
-    await interaction.response.send_message(embed=start_embed)
-    status_msg = await interaction.original_response()
-
+    # For single generation
     if amount == 1:
-        # Single generation - original behavior with proper elapsed timer
+        start_embed = build_progress_embed(prompt, size_label, 0, model_label, model_value, len(ref_images))
+        await interaction.response.send_message(embed=start_embed)
+        status_msg = await interaction.original_response()
+
+        start_time = time.time()
         generation_done = asyncio.Event()
         generation_result = {"data": None, "error": None}
-        start_time_single = time.time()
 
         async def run_gen():
             try:
@@ -1783,9 +1804,9 @@ async def generate(
                 await asyncio.sleep(3)
                 if generation_done.is_set():
                     break
-                elapsed = time.time() - start_time_single
+                elapsed = time.time() - start_time
                 try:
-                    progress_embed = build_progress_embed(prompt, size_label, elapsed, model_label, model_value, len(ref_images), 0, amount)
+                    progress_embed = build_progress_embed(prompt, size_label, elapsed, model_label, model_value, len(ref_images))
                     await status_msg.edit(embed=progress_embed)
                 except Exception:
                     pass
@@ -1800,7 +1821,7 @@ async def generate(
         except asyncio.CancelledError:
             pass
 
-        total_time = time.time() - start_time_single
+        total_time = time.time() - start_time
 
         if generation_result["error"]:
             error_embed = build_error_embed(generation_result["error"], prompt, size_label, model_label, model_value, ref_images)
@@ -1808,13 +1829,13 @@ async def generate(
             return
 
         result = generation_result["data"]
-        video_url = result.get("download_url") or result.get("url")
-        success_embed = build_success_embed(prompt, size_label, total_time, model_label, model_value, ref_images, [video_url] if video_url else None, 1, 1)
+        success_embed = build_success_embed(prompt, size_label, total_time, model_label, model_value, ref_images)
 
         media_file = None
-        if video_url:
+        download_url = result.get("download_url") or result.get("url")
+        if download_url:
             try:
-                response = download_session.get(video_url, timeout=60)
+                response = download_session.get(download_url, timeout=60)
                 response.raise_for_status()
                 media_bytes = response.content
                 
@@ -1825,7 +1846,7 @@ async def generate(
                 if not is_image and len(media_bytes) > 25 * 1024 * 1024:
                     success_embed.add_field(
                         name="📥 Download",
-                        value=f"[Click to download video]({video_url})",
+                        value=f"[Click to download video]({download_url})",
                         inline=False,
                     )
                 else:
@@ -1835,15 +1856,15 @@ async def generate(
                     else:
                         success_embed.add_field(
                             name="📥 Download",
-                            value=f"[Click to download video]({video_url})",
+                            value=f"[Click to download video]({download_url})",
                             inline=False,
                         )
             except Exception as dl_err:
                 print(f"Download error: {dl_err}")
-                if video_url:
+                if download_url:
                     success_embed.add_field(
                         name="📥 Download",
-                        value=f"[Click to download]({video_url})",
+                        value=f"[Click to download]({download_url})",
                         inline=False,
                     )
 
@@ -1855,134 +1876,227 @@ async def generate(
         await interaction.followup.send(
             f"{interaction.user.mention} Media ready! Took **{format_duration(total_time)}**."
         )
-    else:
-        # Multi-generation - CONCURRENT (all at once)
-        video_urls, completed, failed, results, total_time = await run_multiple_generations_concurrent(
-            actual_prompt, size_value, model_value, amount, ref_images, status_msg, interaction
-        )
-        
-        if completed == 0:
-            # All failed
-            error_msg = "\n".join([err for _, _, err in results if err][:5]) if results else "All generations failed"
-            error_embed = build_error_embed(error_msg, prompt, size_label, model_label, model_value, ref_images)
-            await status_msg.edit(embed=error_embed)
-            await interaction.followup.send(
-                f"{interaction.user.mention} ❌ All {amount} generations failed after **{format_duration(total_time)}**.",
-                ephemeral=True
+        return
+    
+    # For multiple generations (amount > 1)
+    start_embed = build_multi_progress_embed(prompt, size_label, model_label, model_value, len(ref_images), 0, amount, [])
+    await interaction.response.send_message(embed=start_embed)
+    status_msg = await interaction.original_response()
+    
+    start_time = time.time()
+    results = [{"success": False, "url": None, "error": None} for _ in range(amount)]
+    
+    async def run_single_generation(index: int):
+        try:
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                None, run_generation, actual_prompt, size_value, model_value, ref_images
             )
-        else:
-            # Some or all succeeded
-            success_embed = build_success_embed(prompt, size_label, total_time, model_label, model_value, ref_images, video_urls, amount, completed)
-            await status_msg.edit(embed=success_embed)
+            results[index] = {"success": True, "url": result.get("url") or result.get("download_url"), "error": None}
+        except Exception as exc:
+            results[index] = {"success": False, "url": None, "error": str(exc)}
+    
+    # Start all generations in parallel
+    tasks = [run_single_generation(i) for i in range(amount)]
+    
+    # Update progress periodically
+    async def update_multi_progress():
+        while not all(r["success"] is not False or r["error"] is not None for r in results):
+            await asyncio.sleep(5)
+            completed = sum(1 for r in results if r["success"] is True or r["error"] is not None)
+            # Build status list for display
+            status_list = []
+            for idx, r in enumerate(results):
+                if r["success"]:
+                    status_list.append(("completed", r["url"]))
+                elif r["error"]:
+                    status_list.append(("failed", None))
+                else:
+                    status_list.append(("pending", None))
             
-            if completed == amount:
-                await interaction.followup.send(
-                    f"{interaction.user.mention} 🎉 All **{completed}/{amount}** videos generated successfully! Took **{format_duration(total_time)}**."
-                )
-            else:
-                await interaction.followup.send(
-                    f"{interaction.user.mention} ⚠️ **{completed}/{amount}** videos succeeded, **{failed}** failed. Took **{format_duration(total_time)}**."
-                )
+            try:
+                progress_embed = build_multi_progress_embed(prompt, size_label, model_label, model_value, len(ref_images), completed, amount, status_list)
+                await status_msg.edit(embed=progress_embed)
+            except Exception:
+                pass
+    
+    progress_task = asyncio.create_task(update_multi_progress())
+    await asyncio.gather(*tasks)
+    progress_task.cancel()
+    
+    total_time = time.time() - start_time
+    
+    # Check if any succeeded
+    success_count = sum(1 for r in results if r["success"])
+    
+    if success_count == 0:
+        # All failed
+        errors = [r["error"] for r in results if r["error"]]
+        error_embed = build_error_embed(f"All {amount} generations failed. First error: {errors[0][:300]}" if errors else "All generations failed", prompt, size_label, model_label, model_value, ref_images)
+        await status_msg.edit(embed=error_embed)
+        return
+    
+    # Build success embed with all results
+    success_embed = build_multi_success_embed(prompt, size_label, total_time, model_label, model_value, ref_images, results)
+    
+    # Try to attach first successful media if only one succeeded and it's an image
+    if success_count == 1:
+        for r in results:
+            if r["success"] and r["url"]:
+                try:
+                    response = download_session.get(r["url"], timeout=60)
+                    response.raise_for_status()
+                    media_bytes = response.content
+                    is_image = model_value not in VIDEO_MODELS or model_value == "nanobanana_2"
+                    ext = "png" if is_image else "mp4"
+                    filename = f"generated_media.{ext}"
+                    
+                    if not is_image and len(media_bytes) > 25 * 1024 * 1024:
+                        pass  # Too large
+                    else:
+                        media_file = discord.File(io.BytesIO(media_bytes), filename=filename)
+                        if is_image:
+                            success_embed.set_image(url=f"attachment://{filename}")
+                        await status_msg.edit(embed=success_embed, attachments=[media_file])
+                        return
+                except Exception:
+                    pass
+    
+    await status_msg.edit(embed=success_embed)
+    
+    # Ping user with completion status
+    await interaction.followup.send(
+        f"{interaction.user.mention} All {amount} generations complete! **{success_count}/{amount}** succeeded. Took **{format_duration(total_time)}**."
+    )
 
+# ─── Status Command (Owner Only) ──────────────────────────────────────────────
 
-# ─── Owner-only commands ─────────────────────────────────────────────────────
-
-@discord.app_commands.allowed_installs(guilds=True, users=True)
-@discord.app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
-@tree.command(name="status", description="[OWNER ONLY] Set bot status mode")
+@tree.command(name="status", description="Set bot status mode (Owner only)")
 @app_commands.describe(
-    mode="Bot status mode",
-    description="Description/reason for the status change"
+    mode="Status mode to set",
+    description="Description for buggy/broken mode"
 )
 @app_commands.choices(mode=status_choices)
 async def status_cmd(
     interaction: discord.Interaction,
     mode: app_commands.Choice[str],
-    description: str = "No description provided"
+    description: str = ""
 ):
-    # Check if user is owner
-    if not BotState.is_owner(interaction.user.id):
-        await interaction.response.send_message("❌ You don't have permission to use this command. This command is only for the bot owner.", ephemeral=True)
+    if interaction.user.id != OWNER_ID:
+        embed = discord.Embed(
+            title="⛔ Permission Denied",
+            description="Only the bot owner can use this command.",
+            color=ERROR_COLOR,
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
         return
     
-    BotState.set_status(mode.value, description)
+    BOT_STATUS["mode"] = mode.value
+    BOT_STATUS["description"] = description
+    BOT_STATUS["set_by"] = str(interaction.user)
+    BOT_STATUS["set_at"] = datetime.now().isoformat()
     
-    status_colors = {
-        "normal": SUCCESS_COLOR,
-        "buggy": BUGGY_COLOR,
-        "broken": BROKEN_COLOR
-    }
-    
-    status_emojis = {
+    mode_icons = {
         "normal": "✅",
         "buggy": "⚠️",
         "broken": "🔴"
     }
     
     embed = discord.Embed(
-        title=f"{status_emojis[mode.value]} Bot Status Updated",
-        description=f"Bot is now in **{mode.value.upper()}** mode.",
-        color=status_colors[mode.value],
+        title=f"{mode_icons.get(mode.value, '🔄')} Bot Status Updated",
+        color=get_success_color(),
         timestamp=discord.utils.utcnow(),
     )
-    embed.add_field(name="📝 Description", value=description, inline=False)
-    
-    if mode.value == "normal":
-        embed.add_field(name="ℹ️ Info", value="Bot is functioning normally. All features are available.", inline=False)
-    elif mode.value == "buggy":
-        embed.add_field(name="⚠️ Note", value="The bot will still work but will display the buggy note in all embeds.", inline=False)
-    else:
-        embed.add_field(name="🔴 Critical", value="The bot will NOT generate any media. All generation commands will be blocked.", inline=False)
+    embed.add_field(name="Mode", value=f"`{mode.value.upper()}`", inline=True)
+    if description:
+        embed.add_field(name="Description", value=f"```{description}```", inline=False)
+    embed.set_footer(text=f"Set by {interaction.user}")
     
     await interaction.response.send_message(embed=embed)
 
+# ─── Ban Command (Owner Only) ─────────────────────────────────────────────────
 
-@discord.app_commands.allowed_installs(guilds=True, users=True)
-@discord.app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
-@tree.command(name="ban", description="[OWNER ONLY] Ban a user from using the bot")
+@tree.command(name="ban", description="Ban a user from using the bot (Owner only)")
 @app_commands.describe(
     user="The user to ban",
-    duration="Ban duration",
-    reason="Reason for the ban"
+    reason="Reason for the ban",
+    duration="Duration of the ban"
 )
 @app_commands.choices(duration=duration_choices)
 async def ban_cmd(
     interaction: discord.Interaction,
     user: discord.User,
-    duration: app_commands.Choice[int],
-    reason: str = "No reason provided"
+    reason: str = "No reason provided",
+    duration: app_commands.Choice[str] = None
 ):
-    # Check if user is owner
-    if not BotState.is_owner(interaction.user.id):
-        await interaction.response.send_message("❌ You don't have permission to use this command. This command is only for the bot owner.", ephemeral=True)
+    if interaction.user.id != OWNER_ID:
+        embed = discord.Embed(
+            title="⛔ Permission Denied",
+            description="Only the bot owner can use this command.",
+            color=ERROR_COLOR,
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
         return
     
-    # Prevent banning self or other owners
-    if user.id == BOT_OWNER_ID:
-        await interaction.response.send_message("❌ You cannot ban the bot owner.", ephemeral=True)
+    if user.id == OWNER_ID:
+        embed = discord.Embed(
+            title="❌ Cannot Ban Owner",
+            description="You cannot ban the bot owner.",
+            color=ERROR_COLOR,
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
         return
     
-    duration_minutes = duration.value if duration.value != -1 else None
-    duration_text = "Permanent" if duration.value == -1 else f"{duration.name}"
+    if user.id == client.user.id:
+        embed = discord.Embed(
+            title="❌ Cannot Ban Bot",
+            description="You cannot ban the bot itself.",
+            color=ERROR_COLOR,
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
     
-    BotState.ban_user(user.id, user.display_name, duration_minutes, reason, interaction.user.id)
+    duration_value = duration.value if duration else "1h"
+    expires_at = parse_duration(duration_value)
+    
+    banned_users[user.id] = {
+        "reason": reason,
+        "expires_at": expires_at,
+        "banned_at": datetime.now(),
+        "banned_by": str(interaction.user)
+    }
+    
+    duration_text = "Permanent" if expires_at is None else duration.name
     
     embed = discord.Embed(
         title="🔨 User Banned",
-        color=ERROR_COLOR,
+        color=SUCCESS_COLOR,
         timestamp=discord.utils.utcnow(),
     )
-    embed.add_field(name="👤 User", value=f"{user.mention} (`{user.id}`)", inline=True)
-    embed.add_field(name="⏱️ Duration", value=duration_text, inline=True)
-    embed.add_field(name="👮 Banned By", value=interaction.user.mention, inline=True)
-    embed.add_field(name="📝 Reason", value=reason, inline=False)
+    embed.add_field(name="User", value=f"{user.mention} (`{user.id}`)", inline=True)
+    embed.add_field(name="Duration", value=f"`{duration_text}`", inline=True)
+    embed.add_field(name="Reason", value=f"```{reason}```", inline=False)
+    embed.set_footer(text=f"Banned by {interaction.user}")
     
     await interaction.response.send_message(embed=embed)
+    
+    # Try to DM the banned user
+    try:
+        dm_embed = discord.Embed(
+            title="🔨 You have been banned",
+            description=f"You have been banned from using the AI Generation Bot.",
+            color=ERROR_COLOR,
+        )
+        dm_embed.add_field(name="Duration", value=duration_text, inline=True)
+        dm_embed.add_field(name="Reason", value=reason, inline=False)
+        dm_embed.set_footer(text="Contact the bot owner for more information.")
+        await user.send(embed=dm_embed)
+    except:
+        pass
 
+# ─── Unban Command (Owner Only) ───────────────────────────────────────────────
 
-@discord.app_commands.allowed_installs(guilds=True, users=True)
-@discord.app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
-@tree.command(name="unban", description="[OWNER ONLY] Unban a user")
+@tree.command(name="unban", description="Unban a user (Owner only)")
 @app_commands.describe(
     user="The user to unban"
 )
@@ -1990,95 +2104,138 @@ async def unban_cmd(
     interaction: discord.Interaction,
     user: discord.User
 ):
-    # Check if user is owner
-    if not BotState.is_owner(interaction.user.id):
-        await interaction.response.send_message("❌ You don't have permission to use this command. This command is only for the bot owner.", ephemeral=True)
-        return
-    
-    if BotState.unban_user(user.id):
+    if interaction.user.id != OWNER_ID:
         embed = discord.Embed(
-            title="✅ User Unbanned",
-            description=f"{user.mention} (`{user.id}`) has been unbanned and can now use the bot again.",
-            color=SUCCESS_COLOR,
-            timestamp=discord.utils.utcnow(),
+            title="⛔ Permission Denied",
+            description="Only the bot owner can use this command.",
+            color=ERROR_COLOR,
         )
-        await interaction.response.send_message(embed=embed)
-    else:
-        await interaction.response.send_message(f"❌ User {user.mention} is not banned.", ephemeral=True)
-
-
-@discord.app_commands.allowed_installs(guilds=True, users=True)
-@discord.app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
-@tree.command(name="banlist", description="[OWNER ONLY] Show all banned users")
-async def banlist_cmd(interaction: discord.Interaction):
-    # Check if user is owner
-    if not BotState.is_owner(interaction.user.id):
-        await interaction.response.send_message("❌ You don't have permission to use this command. This command is only for the bot owner.", ephemeral=True)
+        await interaction.response.send_message(embed=embed, ephemeral=True)
         return
     
-    banned_users = BotState.get_banned_users()
-    
-    if not banned_users:
-        await interaction.response.send_message("📋 No users are currently banned.", ephemeral=True)
+    if user.id not in banned_users:
+        embed = discord.Embed(
+            title="❌ User Not Banned",
+            description=f"{user.mention} is not currently banned.",
+            color=ERROR_COLOR,
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
         return
+    
+    del banned_users[user.id]
     
     embed = discord.Embed(
-        title="📋 Banned Users List",
-        color=ERROR_COLOR,
+        title="✅ User Unbanned",
+        color=SUCCESS_COLOR,
         timestamp=discord.utils.utcnow(),
     )
+    embed.add_field(name="User", value=f"{user.mention} (`{user.id}`)", inline=True)
+    embed.set_footer(text=f"Unbanned by {interaction.user}")
+    
+    await interaction.response.send_message(embed=embed)
+    
+    # Try to DM the unbanned user
+    try:
+        dm_embed = discord.Embed(
+            title="✅ You have been unbanned",
+            description="You can now use the AI Generation Bot again.",
+            color=SUCCESS_COLOR,
+        )
+        await user.send(embed=dm_embed)
+    except:
+        pass
+
+# ─── Banlist Command (Owner Only) ─────────────────────────────────────────────
+
+@tree.command(name="banlist", description="Show all banned users (Owner only)")
+async def banlist_cmd(interaction: discord.Interaction):
+    if interaction.user.id != OWNER_ID:
+        embed = discord.Embed(
+            title="⛔ Permission Denied",
+            description="Only the bot owner can use this command.",
+            color=ERROR_COLOR,
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+    
+    if not banned_users:
+        embed = discord.Embed(
+            title="📋 Ban List",
+            description="No users are currently banned.",
+            color=INFO_COLOR,
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
     
     ban_list_text = ""
     for user_id, ban_info in banned_users.items():
-        ban_until = ban_info["until"]
-        if ban_until:
-            remaining = ban_until - datetime.now()
-            if remaining.total_seconds() > 0:
-                days = remaining.days
-                hours = remaining.seconds // 3600
-                minutes = (remaining.seconds % 3600) // 60
-                time_left = f"{days}d {hours}h {minutes}m" if days > 0 else f"{hours}h {minutes}m" if hours > 0 else f"{minutes}m"
-            else:
-                time_left = "Expired (will be auto-removed)"
-        else:
-            time_left = "Permanent"
+        try:
+            user = await client.fetch_user(user_id)
+            username = f"{user.name}#{user.discriminator}" if hasattr(user, 'discriminator') else user.name
+        except:
+            username = f"Unknown User ({user_id})"
         
-        ban_list_text += f"**{ban_info.get('name', 'Unknown')}** (`{user_id}`)\n"
-        ban_list_text += f"└ Expires: {time_left}\n"
-        ban_list_text += f"└ Reason: {ban_info['reason']}\n\n"
+        expires = "Permanent" if ban_info["expires_at"] is None else ban_info["expires_at"].strftime("%Y-%m-%d %H:%M:%S")
+        ban_list_text += f"**{username}**\n"
+        ban_list_text += f"└ ID: `{user_id}` | Expires: {expires}\n"
+        ban_list_text += f"└ Reason: {ban_info['reason'][:100]}\n\n"
         
-        if len(ban_list_text) > 3500:
-            ban_list_text += "... and more"
+        if len(ban_list_text) > 1800:
+            ban_list_text += "*... and more*"
             break
     
-    embed.description = ban_list_text
+    embed = discord.Embed(
+        title="📋 Ban List",
+        description=ban_list_text[:4000],
+        color=INFO_COLOR,
+    )
     embed.set_footer(text=f"Total banned users: {len(banned_users)}")
     
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
+# ─── Existing commands (ping, sizes, models) ─────────────────────────────────
 
 @discord.app_commands.allowed_installs(guilds=True, users=True)
 @discord.app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
 @tree.command(name="ping", description="Check if bot is alive")
 async def ping_cmd(interaction: discord.Interaction):
+    # Check if user is banned
+    is_banned, ban_message = is_user_banned(interaction.user.id)
+    if is_banned:
+        embed = discord.Embed(
+            title="🔒 Access Denied",
+            description=ban_message,
+            color=ERROR_COLOR,
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+    
     embed = discord.Embed(
         title="🏓 Pong!",
-        description=f"Latency: `{round(client.latency * 1000)}ms`\nStatus: ✅ Online\nBot Mode: **{BOT_STATUS.upper()}**",
-        color=SUCCESS_COLOR if BOT_STATUS == "normal" else (BUGGY_COLOR if BOT_STATUS == "buggy" else BROKEN_COLOR),
+        description=f"Latency: `{round(client.latency * 1000)}ms`\nStatus: ✅ Online\nBot Mode: `{BOT_STATUS['mode'].upper()}`",
+        color=SUCCESS_COLOR if BOT_STATUS['mode'] == 'normal' else (BUGGY_COLOR if BOT_STATUS['mode'] == 'buggy' else BROKEN_COLOR),
     )
-    if BOT_STATUS != "normal":
-        embed.add_field(name="⚠️ Note", value=STATUS_DESCRIPTION, inline=False)
     await interaction.response.send_message(embed=embed)
-
 
 @discord.app_commands.allowed_installs(guilds=True, users=True)
 @discord.app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
 @tree.command(name="sizes", description="View all available media sizes")
 async def sizes_cmd(interaction: discord.Interaction):
+    # Check if user is banned
+    is_banned, ban_message = is_user_banned(interaction.user.id)
+    if is_banned:
+        embed = discord.Embed(
+            title="🔒 Access Denied",
+            description=ban_message,
+            color=ERROR_COLOR,
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+    
     embed = discord.Embed(
         title="📏  Available Sizes",
         description="Use these with `/generate` to pick your resolution.",
-        color=INFO_COLOR if BotState.get_status() != "buggy" else BUGGY_COLOR,
+        color=INFO_COLOR,
     )
     landscape, portrait, square = [], [], []
     for size in VIDEO_SIZES:
@@ -2097,19 +2254,27 @@ async def sizes_cmd(interaction: discord.Interaction):
     if square:
         embed.add_field(name="⬛ Square", value="\n".join(square), inline=False)
     
-    if BotState.get_status() == "buggy":
-        embed.add_field(name="⚠️ NOTE", value=f"**{STATUS_DESCRIPTION}**", inline=False)
-    
+    embed = add_status_note(embed)
     await interaction.response.send_message(embed=embed)
-
 
 @discord.app_commands.allowed_installs(guilds=True, users=True)
 @discord.app_commands.allowed_contexts(guilds=True, dms=True, private_channels=True)
 @tree.command(name="models", description="View all available AI models")
 async def models_cmd(interaction: discord.Interaction):
+    # Check if user is banned
+    is_banned, ban_message = is_user_banned(interaction.user.id)
+    if is_banned:
+        embed = discord.Embed(
+            title="🔒 Access Denied",
+            description=ban_message,
+            color=ERROR_COLOR,
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return
+    
     embed = discord.Embed(
         title="🧠  Available Models",
-        color=INFO_COLOR if BotState.get_status() != "buggy" else BUGGY_COLOR,
+        color=INFO_COLOR,
     )
     embed.add_field(
         name="Image models",
@@ -2130,12 +2295,8 @@ async def models_cmd(interaction: discord.Interaction):
         ),
         inline=False,
     )
-    
-    if BotState.get_status() == "buggy":
-        embed.add_field(name="⚠️ NOTE", value=f"**{STATUS_DESCRIPTION}**", inline=False)
-    
+    embed = add_status_note(embed)
     await interaction.response.send_message(embed=embed)
-
 
 # ─── تشغيل البوت ────────────────────────────────────────────────────────────
 
@@ -2152,5 +2313,4 @@ if __name__ == "__main__":
     # تشغيل البوت
     print("🚀 Starting Discord Bot on Render...")
     print("📡 Bot will run 24/7!")
-    print(f"👑 Owner ID: {BOT_OWNER_ID}")
     client.run(TOKEN)
